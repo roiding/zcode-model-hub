@@ -58,53 +58,94 @@
     return hits;
   }
 
-  function ensureButtonNextTo(target) {
-    // Sit immediately AFTER the "add model" button, in the same flow —
-    // never touch the parent's layout (forcing flex on a column container
-    // scrambled the settings page once).
-    if (target.getAttribute("data-model-hub-near")) return;
-    var next = target.nextElementSibling;
-    if (next && next.id === BTN_ID) return;
+  // Subtle native-looking button: plain outline, no gradient/glow.
+  function makeSubtleButton(label, title, onClick, id) {
     var btn = document.createElement("button");
-    btn.id = BTN_ID;
+    if (id) btn.id = id;
     btn.type = "button";
-    btn.textContent = "⚡️ 拉取模型";
-    btn.title = "zcode-model-hub：根据当前 Base URL 和 API Key 自动拉取可用模型列表";
+    btn.textContent = label;
+    btn.title = title;
     btn.style.cssText =
-      "display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;" +
-      "border:1px solid rgba(96,165,250,.45);" +
-      "background:linear-gradient(135deg,rgba(96,165,250,.16),rgba(139,92,246,.14));" +
-      "color:inherit;transition:filter .15s";
+      "display:inline-flex;align-items:center;justify-content:center;gap:4px;" +
+      "padding:4px 12px;border-radius:8px;font-size:12px;cursor:pointer;color:inherit;" +
+      "border:1px solid rgba(128,128,128,.35);background:transparent;transition:background .15s";
     btn.onmouseenter = function () {
-      btn.style.filter = "brightness(1.12)";
+      btn.style.background = "rgba(128,128,128,.12)";
     };
     btn.onmouseleave = function () {
-      btn.style.filter = "";
+      btn.style.background = "transparent";
     };
     btn.addEventListener("click", function (ev) {
       ev.preventDefault();
       ev.stopPropagation();
-      onPullClick(btn);
+      onClick(btn);
+    });
+    return btn;
+  }
+
+  // Preferred placement (modelhub-style): right side of the "模型列表" row.
+  function findModelListRow() {
+    var leaves = document.querySelectorAll("div,span,label,p,td,th");
+    for (var i = 0; i < leaves.length; i++) {
+      var el = leaves[i];
+      if (el.children.length) continue; // leaf nodes only
+      var t = (el.textContent || "").trim();
+      if (!/^(模型列表[:：]?|model list|models)$/i.test(t)) continue;
+      var r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue; // hidden
+      // Climb from the label to the row container that also holds the list.
+      var row = el.parentElement;
+      var hops = 0;
+      var w = r.width;
+      while (row && hops < 4) {
+        var rw = row.getBoundingClientRect().width;
+        if (rw > w * 1.8) break;
+        w = rw;
+        row = row.parentElement;
+        hops++;
+      }
+      return row || el.parentElement;
+    }
+    return null;
+  }
+
+  function ensureButtonsInRow(row) {
+    if (row.getAttribute("data-model-hub-row")) return;
+    if (row.querySelector("#" + BTN_ID)) return;
+    row.setAttribute("data-model-hub-row", "1");
+    var wrap = document.createElement("span");
+    wrap.style.cssText = "display:inline-flex;gap:8px;align-items:center";
+    try {
+      wrap.style.marginLeft = getComputedStyle(row).display.indexOf("flex") >= 0 ? "auto" : "12px";
+    } catch (e) {
+      wrap.style.marginLeft = "12px";
+    }
+    wrap.appendChild(
+      makeSubtleButton("⚡️ 拉取模型", "zcode-model-hub：根据当前 Base URL 和 API Key 自动拉取可用模型列表", onPullClick, BTN_ID),
+    );
+    wrap.appendChild(
+      makeSubtleButton("🧬 模拟请求头", "zcode-model-hub：为该供应商配置 Claude Code / Codex CLI 请求头模拟（写入 provider.headers）", function () {
+        onHeadersClick();
+      }),
+    );
+    row.appendChild(wrap);
+  }
+
+  // Fallback placement for builds without a 模型列表 label: sit right after
+  // the add-model button, matching its rendered metrics.
+  function ensureButtonNextTo(target) {
+    if (target.getAttribute("data-model-hub-near")) return;
+    var next = target.nextElementSibling;
+    if (next && next.id === BTN_ID) return;
+    target.setAttribute("data-model-hub-near", "1");
+    var pull = makeSubtleButton("⚡️ 拉取模型", "zcode-model-hub：根据当前 Base URL 和 API Key 自动拉取可用模型列表", onPullClick, BTN_ID);
+    var hbtn = makeSubtleButton("🧬 模拟请求头", "zcode-model-hub：为该供应商配置请求头模拟（写入 provider.headers）", function () {
+      onHeadersClick();
     });
     try {
-      target.setAttribute("data-model-hub-near", "1");
-      target.insertAdjacentElement("afterend", btn);
-      matchNativeSize(btn, target);
-      // second entry point: per-provider custom headers (request-header
-      // simulation), written to the provider's native `headers` field
-      var hbtn = document.createElement("button");
-      hbtn.type = "button";
-      hbtn.textContent = "🧬 模拟请求头";
-      hbtn.title = "zcode-model-hub：为该供应商配置 Claude Code / Codex CLI 请求头模拟（写入 provider.headers）";
-      hbtn.style.cssText = btn.style.cssText;
-      hbtn.onmouseenter = btn.onmouseenter;
-      hbtn.onmouseleave = btn.onmouseleave;
-      hbtn.addEventListener("click", function (ev) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        onHeadersClick();
-      });
-      btn.insertAdjacentElement("afterend", hbtn);
+      target.insertAdjacentElement("afterend", pull);
+      matchNativeSize(pull, target);
+      pull.insertAdjacentElement("afterend", hbtn);
       matchNativeSize(hbtn, target);
     } catch (e) {}
   }
@@ -129,6 +170,11 @@
 
   function checkAndInject() {
     if (!api()) return;
+    var row = findModelListRow();
+    if (row) {
+      ensureButtonsInRow(row);
+      return;
+    }
     var hits = findAddModelButtons();
     for (var i = 0; i < hits.length; i++) ensureButtonNextTo(hits[i]);
   }
