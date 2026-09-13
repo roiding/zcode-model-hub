@@ -53,6 +53,72 @@ function checkAsarIntegrityFuse(appBaseDir) {
   return null;
 }
 
+// Build the desired patched entry contents from an UNPATCHED source archive
+// (the live asar on first install, or the cold backup when upgrading).
+function buildPatchedEntries(sourceAsar, targets) {
+  const mainTxt = readEntryText(sourceAsar, targets.main);
+  const preloadTxt = readEntryText(sourceAsar, targets.preload);
+  const htmlTxt = readEntryText(sourceAsar, targets.rendererHtml);
+  if (mainTxt == null || preloadTxt == null || htmlTxt == null)
+    throw new Error("目标条目读取失败（可能为 unpacked 条目），ZCode 版本不兼容");
+
+  const uiScriptRel = targets.uiScript.split("/").pop();
+  const patchMap = {
+    [targets.main]: Buffer.from(mainTxt + "\n" + snippet("main-handlers.js"), "utf8"),
+    [targets.preload]: Buffer.from(preloadTxt + "\n" + snippet("preload-bridge.cjs"), "utf8"),
+    [targets.rendererHtml]: Buffer.from(patchHtml(htmlTxt, uiScriptRel), "utf8"),
+    [targets.uiScript]: Buffer.from(snippet("ui/zcode-model-hub.js"), "utf8"),
+  };
+  const entryHashes = {};
+  for (const [rel, buf] of Object.entries(patchMap)) entryHashes[rel] = sha256Buf(buf);
+  return { patchMap, entryHashes };
+}
+
+// Surgical repack from sourceAsar + atomic replace of the live archive.
+function writePatchedArchive(resourcesDir, asarPath, sourceAsar, targets, desired, manifestBase) {
+  const tmpOut = path.join(resourcesDir, "app.asar.model-hub-new");
+  patchEntries(sourceAsar, tmpOut, desired.patchMap);
+  const expectedSize = fs.statSync(tmpOut).size;
+  verifyPatchedArchive(tmpOut, desired.entryHashes);
+
+  const liveTmp = asarPath + ".model-hub-tmp";
+  fs.rmSync(liveTmp, { force: true });
+  fs.copyFileSync(tmpOut, liveTmp);
+  if (fs.statSync(liveTmp).size !== expectedSize) {
+    fs.rmSync(liveTmp, { force: true });
+    throw new Error("live copy size mismatch - aborted, original untouched");
+  }
+  fs.renameSync(liveTmp, asarPath);
+  fs.rmSync(tmpOut, { force: true });
+
+  const patchedHash = sha256File(asarPath);
+  const st = fs.statSync(asarPath);
+  saveManifest({
+    tool: "zcode-model-hub",
+    patchVersion: PATCH_VERSION,
+    sentinel: SENTINEL,
+    platform: process.platform,
+    ...manifestBase,
+    resourcesDir,
+    asarPath,
+    targets,
+    entryHashes: desired.entryHashes,
+    patchedHash,
+    patchedStat: { size: st.size, mtimeMs: st.mtimeMs },
+    updatedAt: new Date().toISOString(),
+  });
+  clearPending();
+  pruneBackups(2);
+  return patchedHash;
+}
+
+function requireNotRunning(_isRunning, forceClose, _forceCloseFn, { auto }) {
+  if (!_isRunning()) return;
+  if (auto) throw new Error("deferred: zcode running");
+  if (!forceClose) throw new Error("ZCode 正在运行。请先退出 ZCode，或使用 --force-close。");
+  if (!_forceCloseFn()) throw new Error("无法退出 ZCode 进程，已放弃。");
+}
+
 export async function install({
   resourcesOverride,
   forceClose = false,
@@ -78,21 +144,43 @@ export async function install({
   checkAsarIntegrityFuse(appBaseDir);
 
   const targets = discoverTargets(asarPath);
+  const m0 = loadManifest();
+  const curHash = sha256File(asarPath);
 
-  // Already ours? Don't hard-fail — resume/finish the remaining layers
-  // (skill deployment, watcher) so `install` is idempotent after an
-  // interrupted first run.
+  // Already ours? Either upgrade the injected content from the cold backup
+  // (snippets changed since the last install) or just resume the remaining
+  // layers — never hard-fail on a half-finished setup.
   if (isAlreadyPatched(asarPath, targets)) {
-    let m = loadManifest();
-    const curHash = sha256File(asarPath);
-    if (!m || m.patchedHash !== curHash) {
+    const backupAsar = m0 && m0.originalHash ? backupPathFor(m0.originalHash) : null;
+    const canRebuild =
+      backupAsar && fs.existsSync(backupAsar) && m0.patchedHash === curHash;
+
+    if (canRebuild) {
+      const desired = buildPatchedEntries(backupAsar, targets);
+      const unchanged =
+        m0.entryHashes &&
+        Object.entries(desired.entryHashes).every(([k, v]) => m0.entryHashes[k] === v);
+      if (!unchanged) {
+        requireNotRunning(_isRunning, forceClose, _forceCloseFn, { auto });
+        writePatchedArchive(resourcesDir, asarPath, backupAsar, targets, desired, m0);
+        return {
+          ok: true,
+          updated: true,
+          targets,
+          note: "注入内容已从原版备份重建（升级）。完全退出并重启 ZCode 生效。",
+        };
+      }
+    }
+
+    // resume-only: nothing to repatch, complete the remaining layers
+    if (!m0 || m0.patchedHash !== curHash) {
       const st = fs.statSync(asarPath);
-      m = {
+      saveManifest({
         tool: "zcode-model-hub",
         patchVersion: PATCH_VERSION,
         sentinel: SENTINEL,
         platform: process.platform,
-        ...(m || {}),
+        ...(m0 || {}),
         resourcesDir,
         asarPath,
         appBaseDir,
@@ -100,8 +188,7 @@ export async function install({
         patchedHash: curHash,
         patchedStat: { size: st.size, mtimeMs: st.mtimeMs },
         updatedAt: new Date().toISOString(),
-      };
-      saveManifest(m);
+      });
       clearPending();
     }
     return {
@@ -116,71 +203,17 @@ export async function install({
   if (foreign.length)
     throw new Error(`检测到其他补丁已注入（${foreign.join("、")}），叠加注入有风险，已停止。请先还原官方版本。`);
 
-  if (_isRunning()) {
-    if (auto) throw new Error("deferred: zcode running");
-    if (!forceClose) throw new Error("ZCode 正在运行。请先退出 ZCode，或使用 --force-close。");
-    if (!_forceCloseFn()) throw new Error("无法退出 ZCode 进程，已放弃。");
-  }
+  requireNotRunning(_isRunning, forceClose, _forceCloseFn, { auto });
 
   const originalHash = sha256File(asarPath);
   const backup = ensureBackup(asarPath, originalHash);
 
-  const mainTxt = readEntryText(asarPath, targets.main);
-  const preloadTxt = readEntryText(asarPath, targets.preload);
-  const htmlTxt = readEntryText(asarPath, targets.rendererHtml);
-  if (mainTxt == null || preloadTxt == null || htmlTxt == null)
-    throw new Error("目标条目读取失败（可能为 unpacked 条目），ZCode 版本不兼容");
-
-  const patchedMain = Buffer.from(mainTxt + "\n" + snippet("main-handlers.js"), "utf8");
-  const patchedPreload = Buffer.from(preloadTxt + "\n" + snippet("preload-bridge.cjs"), "utf8");
-  const uiScriptRel = targets.uiScript.split("/").pop();
-  const patchedHtml = Buffer.from(patchHtml(htmlTxt, uiScriptRel), "utf8");
-  const uiScript = Buffer.from(snippet("ui/zcode-model-hub.js"), "utf8");
-
-  const patchMap = {
-    [targets.main]: patchedMain,
-    [targets.preload]: patchedPreload,
-    [targets.rendererHtml]: patchedHtml,
-    [targets.uiScript]: uiScript,
-  };
-  const expectedHashes = {};
-  for (const [rel, buf] of Object.entries(patchMap)) expectedHashes[rel] = sha256Buf(buf);
-
-  const tmpOut = path.join(resourcesDir, "app.asar.model-hub-new");
-  patchEntries(asarPath, tmpOut, patchMap);
-  const expectedSize = fs.statSync(tmpOut).size;
-  verifyPatchedArchive(tmpOut, expectedHashes);
-
-  // replace the live archive atomically
-  const liveTmp = asarPath + ".model-hub-tmp";
-  fs.rmSync(liveTmp, { force: true });
-  fs.copyFileSync(tmpOut, liveTmp);
-  if (fs.statSync(liveTmp).size !== expectedSize) {
-    fs.rmSync(liveTmp, { force: true });
-    throw new Error("live copy size mismatch - aborted, original untouched");
-  }
-  fs.renameSync(liveTmp, asarPath);
-  fs.rmSync(tmpOut, { force: true });
-
-  const patchedHash = sha256File(asarPath);
-  const st = fs.statSync(asarPath);
-  saveManifest({
-    tool: "zcode-model-hub",
-    patchVersion: PATCH_VERSION,
-    sentinel: SENTINEL,
-    platform: process.platform,
-    resourcesDir,
-    asarPath,
-    appBaseDir,
+  const desired = buildPatchedEntries(asarPath, targets);
+  const patchedHash = writePatchedArchive(resourcesDir, asarPath, asarPath, targets, desired, {
     originalHash,
-    patchedHash,
-    patchedStat: { size: st.size, mtimeMs: st.mtimeMs },
-    targets,
-    entryHashes: expectedHashes,
+    appBaseDir,
     installedAt: new Date().toISOString(),
   });
-  clearPending();
-  pruneBackups(2);
 
   return {
     ok: true,

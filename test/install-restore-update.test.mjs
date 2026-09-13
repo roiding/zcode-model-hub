@@ -9,7 +9,7 @@ import { makeFakeZcode, tempStateDir } from "./helpers.mjs";
 import { discoverTargets, isAlreadyPatched, detectForeignPatches } from "../src/patch/discover-targets.mjs";
 import { packDir, readEntryText } from "../src/archive/surgical-asar.mjs";
 import { sha256File } from "../src/archive/verify.mjs";
-import { loadManifest, listBackups, readPending, pruneBackups } from "../src/patch/manifest.mjs";
+import { loadManifest, listBackups, readPending, pruneBackups, saveManifest } from "../src/patch/manifest.mjs";
 import { install, restore } from "../src/patch/apply.mjs";
 import { runEnsure } from "../src/repair/ensure.mjs";
 
@@ -45,6 +45,19 @@ test("install -> sentinel present -> second install refused -> restore", async (
   assert.equal(again.ok, true);
   assert.equal(again.already, true);
   assert.equal(sha256File(fx.asar), m.patchedHash); // untouched by the second run
+
+  // upgrade path: recorded entry hash no longer matches the current snippets
+  // (simulates a UI-script change) -> install rebuilds from the cold backup
+  const tUp = discoverTargets(fx.asar);
+  m.entryHashes[tUp.uiScript] = "0".repeat(64);
+  saveManifest(m, state);
+  const up = await install({ resourcesOverride: fx.resources, _isRunning: NOT_RUNNING });
+  assert.equal(up.updated, true);
+  const m2 = loadManifest(state);
+  assert.notEqual(m2.entryHashes[tUp.uiScript], "0".repeat(64));
+  assert.ok(readEntryText(fx.asar, tUp.uiScript).includes("__ZCODE_MODEL_HUB_V1_UI__"));
+  assert.ok(readEntryText(fx.asar, tUp.main).includes("__ZCODE_MODEL_HUB_V1__"));
+  assert.equal(readEntryText(fx.asar, "vendor/extra/lib.js"), "module.exports = 42;\n"); // data region intact
 
   // foreign patch detection on a clean build carrying an upstream marker
   const fx2 = makeFakeZcode();

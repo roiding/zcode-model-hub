@@ -35,6 +35,10 @@
   }
 
   // ---- injection point discovery (semantic, multi-fallback) ----
+  // "+ 添加模型" and icon-prefixed variants normalize down to 添加模型.
+  function normalizeBtnText(s) {
+    return (s || "").trim().replace(/[\s+＋·•]+/g, "");
+  }
   function findAddModelButtons() {
     var hits = [];
     var buttons = document.querySelectorAll("button");
@@ -42,8 +46,8 @@
       var b = buttons[i];
       if (b.id === BTN_ID) continue;
       if (b.getAttribute("data-model-hub-near")) continue;
-      var text = (b.textContent || "").trim().replace(/\s+/g, " ");
-      var label = (b.getAttribute("aria-label") || b.title || "").trim();
+      var text = normalizeBtnText(b.textContent);
+      var label = normalizeBtnText(b.getAttribute("aria-label") || b.title || "");
       var okText = ADD_RE.test(text) && text.length <= 12;
       var okLabel = ADD_RE.test(label) && label.length <= 12;
       if (!okText && !okLabel) continue;
@@ -55,10 +59,12 @@
   }
 
   function ensureButtonNextTo(target) {
-    var parent = target.parentElement;
-    if (!parent) return;
-    if (parent.querySelector("#" + BTN_ID)) return;
-    parent.setAttribute("data-model-hub-near", "1");
+    // Sit immediately AFTER the "add model" button, in the same flow —
+    // never touch the parent's layout (forcing flex on a column container
+    // scrambled the settings page once).
+    if (target.getAttribute("data-model-hub-near")) return;
+    var next = target.nextElementSibling;
+    if (next && next.id === BTN_ID) return;
     var btn = document.createElement("button");
     btn.id = BTN_ID;
     btn.type = "button";
@@ -68,7 +74,7 @@
       "display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:8px;" +
       "font-size:13px;font-weight:500;cursor:pointer;border:1px solid rgba(96,165,250,.45);" +
       "background:linear-gradient(135deg,rgba(96,165,250,.16),rgba(139,92,246,.14));" +
-      "color:inherit;transition:filter .15s";
+      "color:inherit;transition:filter .15s;vertical-align:middle";
     btn.onmouseenter = function () {
       btn.style.filter = "brightness(1.12)";
     };
@@ -81,11 +87,8 @@
       onPullClick(btn);
     });
     try {
-      parent.style.display = "flex";
-      parent.style.flexWrap = "wrap";
-      parent.style.alignItems = "center";
-      parent.style.gap = parent.style.gap || "8px";
-      parent.insertBefore(btn, target);
+      target.setAttribute("data-model-hub-near", "1");
+      target.insertAdjacentElement("afterend", btn);
     } catch (e) {}
   }
 
