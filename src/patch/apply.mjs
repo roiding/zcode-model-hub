@@ -78,8 +78,40 @@ export async function install({
   checkAsarIntegrityFuse(appBaseDir);
 
   const targets = discoverTargets(asarPath);
-  if (isAlreadyPatched(asarPath, targets))
-    throw new Error("检测到本工具已注入（sentinel 存在）。如需重装请先运行 restore。");
+
+  // Already ours? Don't hard-fail — resume/finish the remaining layers
+  // (skill deployment, watcher) so `install` is idempotent after an
+  // interrupted first run.
+  if (isAlreadyPatched(asarPath, targets)) {
+    let m = loadManifest();
+    const curHash = sha256File(asarPath);
+    if (!m || m.patchedHash !== curHash) {
+      const st = fs.statSync(asarPath);
+      m = {
+        tool: "zcode-model-hub",
+        patchVersion: PATCH_VERSION,
+        sentinel: SENTINEL,
+        platform: process.platform,
+        ...(m || {}),
+        resourcesDir,
+        asarPath,
+        appBaseDir,
+        targets,
+        patchedHash: curHash,
+        patchedStat: { size: st.size, mtimeMs: st.mtimeMs },
+        updatedAt: new Date().toISOString(),
+      };
+      saveManifest(m);
+      clearPending();
+    }
+    return {
+      ok: true,
+      already: true,
+      targets,
+      note: "注入层已在位，本次仅补齐用户空间技能与触发器。",
+    };
+  }
+
   const foreign = detectForeignPatches(asarPath, targets);
   if (foreign.length)
     throw new Error(`检测到其他补丁已注入（${foreign.join("、")}），叠加注入有风险，已停止。请先还原官方版本。`);

@@ -1,8 +1,8 @@
 // Deploy the user-space skill + command (layer 1: survives ZCode updates).
 import fs from "node:fs";
 import path from "node:path";
-import { atomicWriteBuffer } from "../archive/verify.mjs";
-import { home } from "../platform.mjs";
+import { atomicWriteBuffer } from "./archive/verify.mjs";
+import { home } from "./platform.mjs";
 
 export function deploySkill() {
   const cliPath = fs.realpathSync(new URL("../../bin/zcode-model-hub.mjs", import.meta.url));

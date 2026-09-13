@@ -39,8 +39,11 @@ test("install -> sentinel present -> second install refused -> restore", async (
   assert.equal(m.originalHash, originalHash);
   assert.equal(m.patchedHash, sha256File(fx.asar));
 
-  // double install refused
-  await assert.rejects(() => install({ resourcesOverride: fx.resources, _isRunning: NOT_RUNNING }), /已注入/);
+  // double install is idempotent: completes the remaining layers, no repatch
+  const again = await install({ resourcesOverride: fx.resources, _isRunning: NOT_RUNNING });
+  assert.equal(again.ok, true);
+  assert.equal(again.already, true);
+  assert.equal(sha256File(fx.asar), m.patchedHash); // untouched by the second run
 
   // foreign patch detection on a clean build carrying an upstream marker
   const fx2 = makeFakeZcode();
