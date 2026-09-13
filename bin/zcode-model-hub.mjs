@@ -80,8 +80,8 @@ async function cmdInstall(opts) {
     watch: !opts.noWatch,
     deploySkill: !opts.noSkill,
   });
-  console.log(`[√] 注入完成 (patch targets: ${Object.keys(res.targets).join(", ")})`);
-  console.log(`    原版备份: ${res.backup}`);
+  console.log(`[√] ${res.already ? "注入层已在位（幂等补齐模式）" : "注入完成"} (patch targets: ${Object.keys(res.targets).join(", ")})`);
+  if (res.backup) console.log(`    原版备份: ${res.backup}`);
   if (!opts.noSkill) {
     const { deploySkill } = await import("../src/deploy-skill.mjs");
     for (const f of deploySkill()) console.log(`    用户空间已部署: ${f}`);
