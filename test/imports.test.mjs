@@ -3,7 +3,8 @@
 // shipped a broken deploy-skill.mjs once).
 import { test } from "node:test";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import os from "node:os";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -24,6 +25,7 @@ const modules = [
 
 test("every module imports cleanly (relative paths resolve)", async () => {
   for (const rel of modules) {
-    await import(path.join(root, rel)); // throws on unresolved imports
+    // Windows needs a file:// URL for absolute-path dynamic imports
+    await import(pathToFileURL(path.join(root, rel)).href);
   }
 });
