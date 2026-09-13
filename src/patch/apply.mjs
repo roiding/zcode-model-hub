@@ -62,17 +62,19 @@ export async function install({
   _isRunning = isZcodeRunning,
   _forceCloseFn = forceCloseZcode,
 } = {}) {
+  // Bug guard FIRST, before any discovery: auto mode (ensure) MUST be pinned
+  // to the resources dir it inspected. Fail fast even on machines without a
+  // ZCode installation — discovery would otherwise throw a different error
+  // and mask the misuse (CI caught exactly this ordering bug).
+  if (auto && !resourcesOverride)
+    throw new Error("internal: auto repair requires an explicit resources dir");
+
   const disc = findZcodeInstall(resourcesOverride);
   if (!disc) throw new Error("未找到 ZCode 安装目录，请用 --resources 显式指定 resources 路径");
   if (disc.kind === "appimage")
     throw new Error("AppImage 版本为只读镜像，注入层不支持；CLI/skill 层不受影响");
 
   const { resourcesDir, asarPath, appBaseDir } = disc;
-  // Bug guard: auto mode (ensure) MUST be pinned to the resources dir it
-  // inspected. Discovery without an explicit dir is only for human-invoked
-  // commands, where the running-app check is real.
-  if (auto && !resourcesOverride)
-    throw new Error("internal: auto repair requires an explicit resources dir");
   checkAsarIntegrityFuse(appBaseDir);
 
   const targets = discoverTargets(asarPath);
