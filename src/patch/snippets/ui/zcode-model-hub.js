@@ -71,10 +71,10 @@
     btn.textContent = "⚡️ 拉取模型";
     btn.title = "zcode-model-hub：根据当前 Base URL 和 API Key 自动拉取可用模型列表";
     btn.style.cssText =
-      "display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:8px;" +
-      "font-size:13px;font-weight:500;cursor:pointer;border:1px solid rgba(96,165,250,.45);" +
+      "display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;" +
+      "border:1px solid rgba(96,165,250,.45);" +
       "background:linear-gradient(135deg,rgba(96,165,250,.16),rgba(139,92,246,.14));" +
-      "color:inherit;transition:filter .15s;vertical-align:middle";
+      "color:inherit;transition:filter .15s";
     btn.onmouseenter = function () {
       btn.style.filter = "brightness(1.12)";
     };
@@ -89,6 +89,41 @@
     try {
       target.setAttribute("data-model-hub-near", "1");
       target.insertAdjacentElement("afterend", btn);
+      matchNativeSize(btn, target);
+      // second entry point: per-provider custom headers (request-header
+      // simulation), written to the provider's native `headers` field
+      var hbtn = document.createElement("button");
+      hbtn.type = "button";
+      hbtn.textContent = "🧬 模拟请求头";
+      hbtn.title = "zcode-model-hub：为该供应商配置 Claude Code / Codex CLI 请求头模拟（写入 provider.headers）";
+      hbtn.style.cssText = btn.style.cssText;
+      hbtn.onmouseenter = btn.onmouseenter;
+      hbtn.onmouseleave = btn.onmouseleave;
+      hbtn.addEventListener("click", function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        onHeadersClick();
+      });
+      btn.insertAdjacentElement("afterend", hbtn);
+      matchNativeSize(hbtn, target);
+    } catch (e) {}
+  }
+
+  // Copy the native button's rendered metrics so our buttons blend in on
+  // any ZCode version instead of hardcoding sizes.
+  function matchNativeSize(btn, ref) {
+    try {
+      var cs = getComputedStyle(ref);
+      btn.style.height = ref.offsetHeight + "px";
+      btn.style.paddingTop = cs.paddingTop;
+      btn.style.paddingRight = cs.paddingRight;
+      btn.style.paddingBottom = cs.paddingBottom;
+      btn.style.paddingLeft = cs.paddingLeft;
+      btn.style.fontSize = cs.fontSize;
+      btn.style.fontWeight = cs.fontWeight;
+      btn.style.borderRadius = cs.borderRadius;
+      btn.style.marginLeft = "8px";
+      btn.style.lineHeight = cs.lineHeight;
     } catch (e) {}
   }
 
@@ -364,6 +399,197 @@
     document.body.appendChild(overlay);
     buildRows();
     updateCounts();
+  }
+
+  // ---- request-header simulation (provider.headers) ----
+  // ZCode natively attaches a provider's `headers` object to every request
+  // it sends to that provider — it just has no UI for it. Some gateways
+  // fingerprint clients (only accept claude-cli / codex_cli_rs traffic), so
+  // we offer presets + a small editor and write the result natively.
+  var HEADER_PRESETS = {
+    claude: {
+      label: "Claude Code (claude-cli)",
+      headers: {
+        "User-Agent": "claude-cli/2.0.14 (external, cli)",
+        "x-app": "cli",
+        "anthropic-version": "2023-06-01",
+        "x-stainless-lang": "js",
+        "x-stainless-runtime": "node",
+        "x-stainless-package-version": "2.0.14",
+      },
+    },
+    codex: {
+      label: "Codex CLI (codex_cli_rs)",
+      headers: {
+        "User-Agent": "codex_cli_rs/0.21.0 (Mac OS 15.6.0; arm64) iTerm.app",
+        originator: "codex_cli_rs",
+        "OpenAI-Beta": "responses=experimental",
+        session_id: "<uuid>",
+      },
+    },
+  };
+
+  function newUuid() {
+    try {
+      return crypto.randomUUID();
+    } catch (e) {
+      return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
+        var r = (Math.random() * 16) | 0;
+        return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+      });
+    }
+  }
+
+  function onHeadersClick() {
+    if (!api()) {
+      toast("zcodeModelHub 桥不可用：preload 未注入或需重启 ZCode", false);
+      return;
+    }
+    var creds = scanFormCredentials();
+    readConfig()
+      .then(function (cfg) {
+        var hit = creds.baseUrl ? findProviderByBaseUrl(cfg, creds.baseUrl) : null;
+        if (!hit) {
+          var sec = cfg.provider || {};
+          var keys = Array.isArray(sec) ? sec.map(function (_, i) { return i; }) : Object.keys(sec);
+          if (keys.length === 1) {
+            var p = Array.isArray(sec) ? sec[0] : sec[keys[0]];
+            hit = { key: keys[0], p: p };
+          }
+        }
+        openHeadersModal(hit, creds, cfg);
+      })
+      .catch(function (e) {
+        toast((e && e.message) || "读取配置失败", false);
+      });
+  }
+
+  function openHeadersModal(hit, creds, cfg) {
+    var dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    var borderColor = dark ? "#444" : "#ddd";
+    var initial = {};
+    if (hit && hit.p && hit.p.headers && typeof hit.p.headers === "object") {
+      for (var k in hit.p.headers) initial[k] = String(hit.p.headers[k]);
+    }
+
+    var overlay = document.createElement("div");
+    overlay.style.cssText =
+      "position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,.45);" +
+      "display:flex;align-items:center;justify-content:center";
+    var panel = document.createElement("div");
+    panel.style.cssText =
+      "width:min(640px,92vw);max-height:80vh;display:flex;flex-direction:column;border-radius:14px;" +
+      "overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.4);font-size:13px;" +
+      "background:" + (dark ? "#1e1f22" : "#ffffff") + ";color:" + (dark ? "#e6e6e6" : "#1a1a1a");
+
+    function el(tag, style, text) {
+      var d = document.createElement(tag);
+      if (style) d.style.cssText = style;
+      if (text != null) d.textContent = text;
+      return d;
+    }
+    function smallBtn(label, fn) {
+      var b = el("button", "padding:5px 10px;border-radius:8px;cursor:pointer;border:1px solid " + borderColor + ";background:transparent;color:inherit;font-size:12px", label);
+      b.addEventListener("click", fn);
+      return b;
+    }
+
+    var header = el("div", "display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid " + (dark ? "#333" : "#eee"));
+    var title = el("div", "font-weight:600;font-size:14px", "请求头模拟");
+    var sub = el("div", "font-size:11px;opacity:.65;margin-top:2px",
+      hit ? "写入供应商 " + (hit.p.name || hit.key) + " 的 provider.headers（ZCode 原生支持并随请求发送）"
+          : "未定位到供应商：请先在下方填写/保存 Base URL 后重试");
+    var titleWrap = el("div");
+    titleWrap.appendChild(title);
+    titleWrap.appendChild(sub);
+    header.appendChild(titleWrap);
+    var closeBtn = el("button", "background:none;border:none;cursor:pointer;font-size:16px;color:inherit", "✕");
+    closeBtn.addEventListener("click", function () { overlay.remove(); });
+    header.appendChild(closeBtn);
+
+    var presetBar = el("div", "display:flex;gap:8px;padding:10px 18px;flex-wrap:wrap;align-items:center");
+    presetBar.appendChild(el("span", "font-size:12px;opacity:.7", "预设："));
+    Object.keys(HEADER_PRESETS).forEach(function (key) {
+      presetBar.appendChild(smallBtn(HEADER_PRESETS[key].label, function () {
+        rows.length = 0;
+        var hs = HEADER_PRESETS[key].headers;
+        for (var hk in hs) rows.push({ k: hk, v: hs[hk] === "<uuid>" ? newUuid() : hs[hk] });
+        buildRows();
+      }));
+    });
+    presetBar.appendChild(smallBtn("＋ 空行", function () { rows.push({ k: "", v: "" }); buildRows(); }));
+    presetBar.appendChild(smallBtn("🗑 清除全部", function () { rows.length = 0; buildRows(); }));
+
+    var list = el("div", "flex:1;overflow-y:auto;padding:4px 18px");
+    var rows = [];
+    for (var ik in initial) rows.push({ k: ik, v: initial[ik] });
+
+    function buildRows() {
+      list.innerHTML = "";
+      if (!rows.length) list.appendChild(el("div", "padding:14px 4px;opacity:.6", "（无自定义请求头）"));
+      rows.forEach(function (row, idx) {
+        var line = el("div", "display:flex;gap:6px;align-items:center;padding:4px 0");
+        var kIn = el("input", "flex:0 0 220px;padding:6px 8px;border-radius:8px;border:1px solid " + borderColor + ";background:transparent;color:inherit;font-family:ui-monospace,monospace;font-size:12px");
+        kIn.placeholder = "Header 名称";
+        kIn.value = row.k;
+        kIn.addEventListener("input", function () { row.k = kIn.value; });
+        var vIn = el("input", "flex:1;padding:6px 8px;border-radius:8px;border:1px solid " + borderColor + ";background:transparent;color:inherit;font-family:ui-monospace,monospace;font-size:12px");
+        vIn.placeholder = "值";
+        vIn.value = row.v;
+        vIn.addEventListener("input", function () { row.v = vIn.value; });
+        line.appendChild(kIn);
+        line.appendChild(vIn);
+        if (/session[_-]?id|conversation[_-]?id/i.test(row.k)) {
+          line.appendChild(smallBtn("换新", function () {
+            row.v = newUuid();
+            vIn.value = row.v;
+          }));
+        }
+        line.appendChild(smallBtn("✕", function () { rows.splice(idx, 1); buildRows(); }));
+        list.appendChild(line);
+      });
+    }
+    buildRows();
+
+    var footer = el("div", "display:flex;align-items:center;justify-content:space-between;padding:12px 18px;border-top:1px solid " + (dark ? "#333" : "#eee"));
+    footer.appendChild(el("div", "font-size:11px;opacity:.65", "注意：之后若在 ZCode 自带界面里重新保存该供应商，ZCode 可能剥离 headers，重开本窗口再应用一次即可。"));
+    var actions = el("div", "display:flex;gap:8px");
+    actions.appendChild(smallBtn("取消", function () { overlay.remove(); }));
+    var apply = el("button", "padding:7px 16px;border-radius:8px;cursor:pointer;border:none;color:#fff;font-size:13px;background:#2d6cdf", "应用并保存");
+    actions.appendChild(apply);
+    footer.appendChild(actions);
+
+    apply.addEventListener("click", function () {
+      var obj = {};
+      for (var i = 0; i < rows.length; i++) {
+        var k = rows[i].k.trim();
+        if (k) obj[k] = rows[i].v;
+      }
+      apply.disabled = true;
+      readConfig()
+        .then(function (fresh) {
+          var target = creds.baseUrl ? findProviderByBaseUrl(fresh, creds.baseUrl) : hit && findProviderByBaseUrl(fresh, (hit.p.options && hit.p.options.baseURL) || hit.p.baseURL || "");
+          if (!target) throw new Error("config 中找不到匹配的供应商，请先保存该供应商");
+          if (Object.keys(obj).length) target.p.headers = obj;
+          else delete target.p.headers;
+          return writeConfig(fresh).then(function () {
+            overlay.remove();
+            toast("已写入 " + Object.keys(obj).length + " 个自定义请求头到 " + (target.p.name || target.key), true);
+            triggerRefresh(target.p.name || target.key);
+          });
+        })
+        .catch(function (e) {
+          apply.disabled = false;
+          toast((e && e.message) || "保存失败", false);
+        });
+    });
+
+    panel.appendChild(header);
+    panel.appendChild(presetBar);
+    panel.appendChild(list);
+    panel.appendChild(footer);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
   }
 
   // final-state merge, mirroring src/config.mjs semantics
