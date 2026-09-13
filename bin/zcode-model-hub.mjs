@@ -301,7 +301,16 @@ async function main() {
       process.exit(1);
     }
   } catch (e) {
-    console.error(`[x] ${e.message}`);
+    let msg = e.message || String(e);
+    // macOS Sequoia+ TCC "App Management": writing inside /Applications/*.app
+    // is denied for apps without the grant — even as root.
+    if (/^(EPERM|EACCES)/.test(msg) && /ZCode\.app|\/Applications\//.test(msg)) {
+      msg +=
+        "\n[i] 这是 macOS 的「App 管理」保护：写入 /Applications 下的应用内容需要授权。\n" +
+        "    系统设置 → 隐私与安全性 → App 管理 → 打开运行本命令的应用\n" +
+        "    （ZCode 或你的终端），完全退出并重开该应用后再重试。sudo 无法绕过。";
+    }
+    console.error(`[x] ${msg}`);
     process.exit(2);
   }
 }
