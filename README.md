@@ -103,11 +103,27 @@ node --test                     # 28 个测试：asar 手术/校验、动态目�
 
 测试中的集成流程使用合成 asar 夹具（`test/helpers.mjs`），不触碰真实安装。
 
-## 已知限制
+## 平台注意事项与故障排查
 
-- 注入层无法作用于 AppImage（只读镜像）；Linux AppImage 用户请用 CLI/skill 层。
-- ZCode 若未来启用 asar 完整性 fuse，注入层整体失效（doctor 会明确报告），CLI 层不受影响。
-- 自动重装要求触发器平台（launchd / Task Scheduler / systemd user）；不满足时 `ensure` 可手动或由启动器 shim 调用。
+### macOS
+- **写入 /Applications 报 EPERM**（Ventura 引入、Sequoia 最严格）：修改其他 App 的内容需要「App 管理」权限。系统设置 → 隐私与安全性 → App 管理 → 打开**运行本命令的应用**（在 ZCode 会话里跑就开 ZCode，在终端跑就开那个终端；列表里没有就 ➕ 手动添加 `/Applications/ZCode.app`）→ **完全退出并重开该应用**（TCC 授权只对重启后的进程生效）→ 重试。**sudo 无法绕过**。CLI 检测到这种情况会直接打印本指引。
+- **ElectronAsarIntegrity（asar 完整性 fuse）**：若 ZCode 某天启用了它，被改过的 app.asar 会拒绝加载。`doctor` 会提前检测 Info.plist 并明确报告 `ENABLED`，注入层不会动手，CLI/技能层不受影响。
+- **LaunchAgent 触发器**：注册在当前用户 `~/Library/LaunchAgents/com.zcode-model-hub.repair.plist`，其中写死了安装时的 node 绝对路径——升级或切换 nvm Node 版本后需重跑 `install` / `watch` 重新注册。`launchctl` 变更无需 sudo。
+
+### Windows
+- **是否需要管理员取决于安装位置**：ZCode 装在 `%LOCALAPPDATA%\Programs\ZCode`（默认）时普通权限即可；装在 `Program Files` 时需要用**管理员终端**运行 install/restore。
+- **触发器**：优先用 PowerShell 注册计划任务（登录时 + 每 6 小时），PowerShell 不可用时自动回退 `schtasks` 每小时任务；`unwatch` 统一卸载。
+- **杀软误报**：修改 app.asar 的行为可能被 Defender 或第三方杀软拦截，属误报，需自行加白名单。
+
+### Linux
+- **AppImage 不支持注入**（只读 squashfs 镜像）；CLI/技能层不受影响，也不要对挂载点强行写入。
+- **触发器需要 systemd 用户会话**（主流桌面发行版默认就有）。极简环境没有时，改用用户级 `~/.local/share/applications/zcode.desktop` 包装器（`Exec=sh -c 'zcode-model-hub ensure && exec zcode'`，用户级 desktop 文件优先且不被更新覆盖），或手动定期跑 `ensure`。
+- **安装路径**：自动探测 `/opt/ZCode`、`/usr/share/zcode` 等；其他位置用 `--resources <dir>` 指定 resources 目录。
+
+### 通用
+- **ZCode 自动更新会覆盖注入**：装了触发器会自动补回（事件驱动，通常几秒内）；没装触发器时，更新后手动重跑一次 `install` 即可（备份按官方版本哈希分目录管理，最近 2 版自动保留）。
+- **运行中永不写入**：手动 install/restore 检测到 ZCode 正在运行会拒绝（`--force-close` 才允许强制关闭）；自动重装遇到运行中一律延迟，记入 `pending.json`，下次触发补齐。
+- **排查顺序**：`status` 看三层各自状态 → `doctor` 深度体检（发现异常时生成 `~/.zcode/model-hub/doctor-report.json`，可携带该文件提 issue）→ 视图层坏了也先确认 `sync` 仍可用（它永远可用）。
 
 ## License
 
