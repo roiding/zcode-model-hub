@@ -4,11 +4,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { makeFakeZcode, tempStateDir } from "./helpers.mjs";
 import { discoverTargets, isAlreadyPatched, detectForeignPatches } from "../src/patch/discover-targets.mjs";
 import { packDir, readEntryText } from "../src/archive/surgical-asar.mjs";
 import { sha256File } from "../src/archive/verify.mjs";
-import { loadManifest, listBackups, readPending, pruneBackups, manifestPath } from "../src/patch/manifest.mjs";
+import { loadManifest, listBackups, readPending, pruneBackups } from "../src/patch/manifest.mjs";
 import { install, restore } from "../src/patch/apply.mjs";
 import { runEnsure } from "../src/repair/ensure.mjs";
 
@@ -85,9 +86,13 @@ test("REGRESSION: auto install without explicit resources dir is refused", async
   );
   // On a machine where the user legitimately installed the tool, the real
   // asar IS expected to contain the sentinel — only assert "untouched" when
-  // there is no real install record.
+  // there is no real install record. NOTE: check the REAL state dir, not
+  // manifestPath(), because this test redirected it via env above.
   const live = "/Applications/ZCode.app/Contents/Resources/app.asar";
-  if (fs.existsSync(live) && !fs.existsSync(manifestPath())) {
+  const realManifest = path.join(
+    os.homedir(), ".zcode", "model-hub", "manifest.json",
+  );
+  if (fs.existsSync(live) && !fs.existsSync(realManifest)) {
     assert.equal(fs.readFileSync(live).includes("__ZCODE_MODEL_HUB_V1__"), false);
   }
 });
