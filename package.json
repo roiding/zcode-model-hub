@@ -1,0 +1,21 @@
+{
+  "name": "zcode-model-hub",
+  "version": "0.1.0",
+  "description": "Cross-platform, update-resilient model pulling for ZCode desktop: user-space CLI/skill layer + adaptive app.asar patch + zero-resident auto-repair",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "zcode-model-hub": "bin/zcode-model-hub.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "check": "node scripts/check-syntax.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TODO/zcode-model-hub"
+  }
+}
