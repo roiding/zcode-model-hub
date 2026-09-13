@@ -1,0 +1,10 @@
+# Normalize line endings: shell scripts must keep LF everywhere (including
+# Windows checkouts), and the repo currently has no binary assets.
+* text=auto
+*.sh text eol=lf
+*.mjs text eol=lf
+*.js text eol=lf
+*.cjs text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.json text eol=lf

@@ -1,5 +1,7 @@
 # zcode-model-hub
 
+[![CI](https://github.com/roiding/zcode-model-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/roiding/zcode-model-hub/actions/workflows/ci.yml)
+
 **为 ZCode 桌面版一键拉取自定义供应商模型列表 —— 全平台、更新自适应、零常驻资源。**
 
 融合并改进了两个上游项目的优点（见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)）：

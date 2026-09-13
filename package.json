@@ -11,11 +11,15 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test",
     "check": "node scripts/check-syntax.mjs"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/TODO/zcode-model-hub"
-  }
+    "url": "git+https://github.com/roiding/zcode-model-hub.git"
+  },
+  "bugs": {
+    "url": "https://github.com/roiding/zcode-model-hub/issues"
+  },
+  "homepage": "https://github.com/roiding/zcode-model-hub#readme"
 }
