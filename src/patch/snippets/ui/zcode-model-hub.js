@@ -67,7 +67,7 @@
     btn.title = title;
     btn.style.cssText =
       "display:inline-flex;align-items:center;justify-content:center;gap:4px;" +
-      "padding:4px 12px;border-radius:8px;font-size:12px;cursor:pointer;color:inherit;" +
+      "padding:2px 10px;border-radius:6px;font-size:12px;line-height:18px;cursor:pointer;color:inherit;" +
       "border:1px solid rgba(128,128,128,.35);background:transparent;transition:background .15s";
     btn.onmouseenter = function () {
       btn.style.background = "rgba(128,128,128,.12)";
@@ -83,10 +83,14 @@
     return btn;
   }
 
-  // Preferred placement (modelhub-style):
-  // Wrap the "模型列表" title in a fresh, isolated flex row so the title
-  // stays on the left and the two action buttons sit cleanly on the far right.
-  // We NEVER mutate the parent's layout styles, preventing layout breakage.
+  // Preferred placement: the two action buttons live on the RIGHT side of the
+  // "模型列表" row. In ZCode's renderer that title is a text-only <label> with
+  // `mb-1 block ...` (full-width block, right side empty; the native "添加模型"
+  // button sits BELOW the list, not in this row). We mirror ZCode's own idiom
+  // for a label-with-right-control row (its API Key row uses
+  // `flex items-center justify-between`) by making this label a flex row and
+  // appending the toolbar inside it. No wrapper element, no parent mutation,
+  // no absolute overlay — the label keeps its exact position and size.
   function injectToolbarAtModelList() {
     var leaves = document.querySelectorAll("h1,h2,h3,h4,h5,h6,span,label,p,div");
     var titleEl = null;
@@ -94,36 +98,30 @@
       var el = leaves[i];
       if (el.children.length > 0) continue; // leaf only
       var t = (el.textContent || "").trim();
-      if (/^(模型列表[:：]?|model list|models)$/i.test(t)) {
-        var r = el.getBoundingClientRect();
-        if (r.width > 0 && r.height > 0) {
-          titleEl = el;
-          break;
-        }
+      if (!/^(模型列表[:：]?|model list|models)$/i.test(t)) continue;
+      var r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      var tag = (el.tagName || "").toLowerCase();
+      if (tag === "label") {
+        titleEl = el;
+        break;
+      }
+      // Non-label matches (e.g. a "Models" sidebar nav item in English UIs)
+      // only count when they carry ZCode's form-label design tokens.
+      if (String(el.className || "").indexOf("text-ui-base") >= 0) {
+        titleEl = el;
+        break;
       }
     }
     if (!titleEl) return false;
 
-    // If already wrapped/injected, do not repeat
-    if (titleEl.parentElement && titleEl.parentElement.id === "zcode-model-hub-title-wrapper") {
-      return true;
-    }
-    if (document.getElementById("zcode-model-hub-title-wrapper")) {
-      return true;
-    }
-
-    var parent = titleEl.parentNode;
-    if (!parent) return false;
-
-    // Create a zero-side-effect wrapper that takes the exact place of titleEl
-    var wrapper = document.createElement("div");
-    wrapper.id = "zcode-model-hub-title-wrapper";
-    wrapper.style.cssText =
-      "display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 8px;";
+    // Already injected into this label (React may reuse the element).
+    if (titleEl.getAttribute("data-model-hub-title") === "1") return true;
+    titleEl.setAttribute("data-model-hub-title", "1");
 
     var toolbar = document.createElement("div");
     toolbar.id = "zcode-model-hub-toolbar";
-    toolbar.style.cssText = "display: inline-flex; align-items: center; gap: 8px; margin-left: auto;";
+    toolbar.style.cssText = "display:inline-flex;align-items:center;gap:8px;flex:none;margin-left:auto;";
 
     toolbar.appendChild(
       makeSubtleButton("请求头模拟", "zcode-model-hub：为该供应商配置 Claude Code / Codex CLI 请求头模拟（写入 provider.headers）", function () {
@@ -134,9 +132,13 @@
       makeSubtleButton("拉取模型", "zcode-model-hub：根据当前 Base URL 和 API Key 自动拉取可用模型列表", onPullClick, BTN_ID)
     );
 
-    parent.insertBefore(wrapper, titleEl);
-    wrapper.appendChild(titleEl);
-    wrapper.appendChild(toolbar);
+    // The label holds a single text node; as a flex row the text becomes the
+    // leading item and the toolbar is pushed to the far right.
+    titleEl.style.display = "flex";
+    titleEl.style.alignItems = "center";
+    titleEl.style.justifyContent = "space-between";
+    titleEl.style.width = "100%";
+    titleEl.appendChild(toolbar);
 
     return true;
   }
