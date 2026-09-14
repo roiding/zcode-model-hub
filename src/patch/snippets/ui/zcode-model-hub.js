@@ -83,9 +83,12 @@
     return btn;
   }
 
-  // Preferred placement (modelhub-style): right side of the "模型列表" row.
+  // Preferred placement (modelhub-style): right side of the header row of
+  // the model list table (the row with 模型/ID/操作 column captions).
   function findModelListRow() {
+    // 1. Locate the 模型列表 section label (or the table column captions).
     var leaves = document.querySelectorAll("div,span,label,p,td,th");
+    var section = null;
     for (var i = 0; i < leaves.length; i++) {
       var el = leaves[i];
       if (el.children.length) continue; // leaf nodes only
@@ -93,20 +96,33 @@
       if (!/^(模型列表[:：]?|model list|models)$/i.test(t)) continue;
       var r = el.getBoundingClientRect();
       if (r.width === 0 || r.height === 0) continue; // hidden
-      // Climb from the label to the row container that also holds the list.
-      var row = el.parentElement;
-      var hops = 0;
-      var w = r.width;
-      while (row && hops < 4) {
-        var rw = row.getBoundingClientRect().width;
-        if (rw > w * 1.8) break;
-        w = rw;
-        row = row.parentElement;
-        hops++;
-      }
-      return row || el.parentElement;
+      section = el;
+      break;
     }
-    return null;
+    if (!section) return null;
+
+    // 2. The header row must be wide (column captions span the section),
+    //    directly below the label vertically, and NOT inside the label's
+    //    own subtree (so we never inject into the title line itself).
+    var sec = section.getBoundingClientRect();
+    var rows = document.querySelectorAll("div");
+    var best = null;
+    for (var j = 0; j < rows.length; j++) {
+      var row = rows[j];
+      if (row === section || section.contains(row) || row.contains(section)) continue;
+      if (row.querySelector("#" + BTN_ID) && row.getAttribute("data-model-hub-row")) continue;
+      var rr = row.getBoundingClientRect();
+      if (rr.width === 0 || rr.height === 0) continue;
+      // same column as the label, vertically just beneath it
+      if (Math.abs((rr.left + rr.right) / 2 - (sec.left + sec.right) / 2) > 80) continue;
+      if (rr.top < sec.bottom - 4 || rr.top > sec.bottom + 120) continue;
+      // wide enough to be the table header (≥60% of the section width)
+      if (rr.width < sec.width * 0.6) continue;
+      // shallow: avoid wrapping the whole model list content area
+      if (row.querySelectorAll("input,button").length > 12) continue;
+      if (!best || rr.width < best.getBoundingClientRect().width) best = row;
+    }
+    return best;
   }
 
   function ensureButtonsInRow(row) {
