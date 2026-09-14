@@ -7,7 +7,7 @@ import path from "node:path";
 import { stateDir } from "../platform.mjs";
 import { atomicWriteBuffer, atomicCopyFile, sha256File } from "../archive/verify.mjs";
 
-export const PATCH_VERSION = "1.1.0";
+export const PATCH_VERSION = "1.1.1";
 export const SENTINEL = "__ZCODE_MODEL_HUB_V1__";
 
 export function manifestPath(stateDirOverride) {

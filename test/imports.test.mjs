@@ -19,6 +19,7 @@ const modules = [
   "src/patch/manifest.mjs",
   "src/patch/discover-targets.mjs",
   "src/patch/apply.mjs",
+  "src/patch/asar-integrity.mjs",
   "src/repair/ensure.mjs",
   "src/repair/triggers.mjs",
   "bin/zcode-model-hub.mjs",

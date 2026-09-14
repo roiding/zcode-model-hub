@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { makeFakeZcode } from "./helpers.mjs";
 import { listFiles, readEntry, readEntryText, patchEntries } from "../src/archive/surgical-asar.mjs";
-import { sha256Buf, verifyPatchedArchive, peekHeader } from "../src/archive/verify.mjs";
+import { sha256Buf, verifyPatchedArchive, peekHeader, atomicCopyFile, atomicWriteBuffer } from "../src/archive/verify.mjs";
 
 test("packDir + listFiles + readEntry round-trip", () => {
   const fx = makeFakeZcode({ withUnpacked: true });
@@ -87,4 +87,31 @@ test("peekHeader parses header without loading payload", () => {
   const fx = makeFakeZcode();
   const { json } = peekHeader(fx.asar);
   assert.ok(json.files["out"]);
+});
+
+test("atomic copies verify expected hashes before replacing the destination", () => {
+  const fixture = makeFakeZcode();
+  const destination = path.join(fixture.resources, "preserve.txt");
+  fs.writeFileSync(destination, "known-good");
+  assert.throws(() => atomicCopyFile(fixture.asar, destination, { expectHash: "0".repeat(64) }), /hash mismatch/);
+  assert.equal(fs.readFileSync(destination, "utf8"), "known-good");
+  assert.equal(fs.readdirSync(fixture.resources).some((name) => name.endsWith(".tmp")), false);
+});
+
+test("atomic buffer replacement preserves existing file permissions", { skip: process.platform === "win32" }, () => {
+  const fixture = makeFakeZcode();
+  const destination = path.join(fixture.resources, "private.txt");
+  fs.writeFileSync(destination, "before", { mode: 0o600 });
+  atomicWriteBuffer(destination, Buffer.from("after"));
+  assert.equal(fs.statSync(destination).mode & 0o777, 0o600);
+});
+
+test("atomic copies support read-only sources and retain their permissions", { skip: process.platform === "win32" }, () => {
+  const fixture = makeFakeZcode();
+  const source = path.join(fixture.resources, "read-only.txt");
+  const destination = path.join(fixture.resources, "copy.txt");
+  fs.writeFileSync(source, "original", { mode: 0o444 });
+  atomicCopyFile(source, destination, { expectHash: sha256Buf(Buffer.from("original")) });
+  assert.equal(fs.statSync(destination).mode & 0o777, 0o444);
+  assert.equal(fs.readFileSync(destination, "utf8"), "original");
 });

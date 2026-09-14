@@ -89,7 +89,7 @@ async function cmdInstall(opts) {
   if (!opts.noWatch) {
     try {
       const { watch } = await import("../src/repair/triggers.mjs");
-      const w = watch();
+      const w = watch({ resourcesOverride: opts.resources });
       console.log(`    自动修复触发器已注册: ${JSON.stringify(w.trigger ?? w)}`);
     } catch (e) {
       console.log(`    [!] 自动修复触发器注册失败（不影响其他层）: ${e.message}`);
@@ -127,15 +127,16 @@ async function cmdEnsure(opts) {
 
 async function cmdSync(opts) {
   mustNode18();
-  const { readConfig, listProviders, writeConfigAtomic, syncProvider } = await import("../src/config.mjs");
-  const cfgPath = path.join(process.env.HOME || "", ".zcode", "v2", "config.json");
+  const { readConfig, listProviders, syncProvider } = await import("../src/config.mjs");
+  const { zcodeConfigPath } = await import("../src/platform.mjs");
+  const cfgPath = zcodeConfigPath();
   const cfg = readConfig(cfgPath);
   if (!cfg) {
     console.error(`[x] 未找到 ${cfgPath}。请先在 ZCode 里添加自定义供应商。`);
     process.exit(1);
   }
   const providers = listProviders(cfg);
-  if (opts.list || (opts.json && !opts.provider)) {
+  if (opts.list) {
     if (opts.json) console.log(JSON.stringify(providers.map((p) => ({ id: p.id, kind: p.kind, baseURL: p.baseURL, models: Object.keys(p.models).length })), null, 2));
     else {
       console.log("已配置的自定义供应商:");
@@ -175,19 +176,29 @@ async function cmdSync(opts) {
     process.exit(1);
   }
 
-  for (const p of targets) {
-    process.stdout.write(`→ ${p.id} (${p.baseURL}) ... `);
-    const r = await syncProvider(cfg, p, { dialect: opts.dialect });
-    if (!r.ok) {
-      console.log("失败");
-      console.error(`   ${r.error}`);
-      continue;
+  const results = [];
+  for (const provider of targets) {
+    if (!opts.json) process.stdout.write(`→ ${provider.id} (${provider.baseURL}) ... `);
+    let result;
+    try {
+      result = await syncProvider(cfg, provider, { dialect: opts.dialect, configPath: cfgPath });
+    } catch (error) {
+      result = { ok: false, error: error.message || String(error) };
     }
-    writeConfigAtomic(cfg, cfgPath);
-    console.log(`ok: 共 ${r.total} 个模型，新增 ${r.added.length}（方言 ${r.dialect}）`);
-    if (opts.json) console.log(JSON.stringify({ provider: p.id, total: r.total, added: r.added, models: r.models }, null, 2));
+    results.push({ provider: provider.id, ...result });
+    if (!result.ok) {
+      process.exitCode = 1;
+      if (!opts.json) {
+        console.log("失败");
+        console.error(`   ${result.error}`);
+      }
+    } else if (!opts.json) {
+      console.log(`ok: 共 ${result.total} 个模型，新增 ${result.added.length}（方言 ${result.dialect}）`);
+    }
   }
-  console.log("提示: 打开 ZCode 模型选择器即可看到新模型（外部写入实时生效）。");
+  if (opts.json) console.log(JSON.stringify(results, null, 2));
+  else if (results.some((result) => result.ok))
+    console.log("提示: 打开 ZCode 模型选择器即可看到新模型（外部写入实时生效）。");
 }
 
 async function cmdStatus(opts) {
@@ -237,14 +248,13 @@ async function cmdDoctor(opts) {
     findings.push(["sentinel", insp.sentinelPresent ? "present" : "absent"]);
     if (insp.foreign.length) findings.push(["foreign-patches", insp.foreign.join(",")]);
     if (process.platform === "darwin") {
-      try {
-        const plist = path.join(disc.appBaseDir, "Contents", "Info.plist");
-        if (fs.existsSync(plist)) {
-          const { spawnSync } = await import("node:child_process");
-          const out = spawnSync("/usr/bin/plutil", ["-extract", "ElectronAsarIntegrity", "raw", "-o", "-", plist], { encoding: "utf8" });
-          findings.push(["asar-integrity", out.status === 0 ? "ENABLED (注入层将不可用)" : "off"]);
-        }
-      } catch {}
+      const integrity = insp.asarIntegrity;
+      const description = integrity.status === "enabled"
+        ? "error: ENABLED (Electron fuse；注入层不可用)"
+        : integrity.status === "unknown"
+          ? `error: unknown (${integrity.error})`
+          : integrity.status === "disabled" ? "disabled (Electron fuse)" : "not-applicable";
+      findings.push(["asar-integrity", description]);
     }
   }
   const { watcherActive } = await import("../src/repair/triggers.mjs");
@@ -260,7 +270,8 @@ async function cmdDoctor(opts) {
   const bad = findings.find(([k, v]) => String(v).startsWith("error") || k === "pending" && v !== "none");
   if (bad && !opts.quiet) {
     const report = { at: new Date().toISOString(), platform: process.platform, findings };
-    const dir = path.join(process.env.HOME || "", ".zcode", "model-hub");
+    const { stateDir } = await import("../src/platform.mjs");
+    const dir = stateDir();
     fs.mkdirSync(dir, { recursive: true });
     const rp = path.join(dir, "doctor-report.json");
     fs.writeFileSync(rp, JSON.stringify(report, null, 2));
@@ -270,7 +281,7 @@ async function cmdDoctor(opts) {
 
 async function cmdWatch(opts) {
   const { watch } = await import("../src/repair/triggers.mjs");
-  const r = watch();
+  const r = watch({ resourcesOverride: opts.resources });
   console.log(`[√] 自动修复触发器已注册 (${r.platform}): ${JSON.stringify(r.trigger ?? r)}`);
 }
 

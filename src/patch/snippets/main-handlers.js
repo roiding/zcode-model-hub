@@ -13,6 +13,7 @@
     const os = (await import("node:os")).default;
     const https = (await import("node:https")).default;
     const http = (await import("node:http")).default;
+    const crypto = (await import("node:crypto")).default;
 
     const CONFIG_PATH = path.join(os.homedir(), ".zcode", "v2", "config.json");
     const PNG_1PX =
@@ -75,9 +76,21 @@
           return reject(new Error("unsupported protocol"));
         const mod = u.protocol === "http:" ? http : https;
         const req = mod.request(u, { method, headers, timeout }, (res) => {
-          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirects > 0) {
+          res.on("error", reject);
+          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
             res.resume();
-            return resolve(httpRequest(new URL(res.headers.location, u).toString(), { headers, method, body, timeout, redirects: redirects - 1 }));
+            let next;
+            try {
+              next = new URL(res.headers.location, u);
+            } catch {
+              return reject(new Error("bad redirect url"));
+            }
+            if (next.origin !== u.origin)
+              return reject(new Error("blocked cross-origin or protocol-changing redirect"));
+            if (method !== "GET" && method !== "HEAD")
+              return reject(new Error("blocked redirect of a probe request"));
+            if (redirects <= 0) return reject(new Error("too many redirects"));
+            return resolve(httpRequest(next.toString(), { headers, method, body, timeout, redirects: redirects - 1 }));
           }
           const chunks = [];
           let len = 0;
@@ -186,13 +199,21 @@
         throw new Error("config root must be an object");
       try {
         fs.copyFileSync(CONFIG_PATH, CONFIG_PATH + ".model-hub.bak");
+        fs.chmodSync(CONFIG_PATH + ".model-hub.bak", 0o600);
       } catch {}
-      const tmp = CONFIG_PATH + ".model-hub-tmp";
-      const fd = fs.openSync(tmp, "w");
-      fs.writeSync(fd, JSON.stringify(cfg, null, 2), "utf8");
-      fs.fsyncSync(fd);
-      fs.closeSync(fd);
-      fs.renameSync(tmp, CONFIG_PATH);
+      const temporary = CONFIG_PATH + ".model-hub-" + crypto.randomUUID() + ".tmp";
+      try {
+        const descriptor = fs.openSync(temporary, "wx", 0o600);
+        try {
+          fs.writeFileSync(descriptor, JSON.stringify(cfg, null, 2), "utf8");
+          fs.fsyncSync(descriptor);
+        } finally {
+          fs.closeSync(descriptor);
+        }
+        fs.renameSync(temporary, CONFIG_PATH);
+      } finally {
+        fs.rmSync(temporary, { force: true });
+      }
     }
     async function register(name, fn) {
       try {

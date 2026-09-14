@@ -3,7 +3,6 @@
 // missing anchors, running app, asar-integrity fuses, verify mismatches.
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import {
   PATCH_VERSION,
   SENTINEL,
@@ -18,6 +17,7 @@ import { discoverTargets, isAlreadyPatched, detectForeignPatches } from "./disco
 import { patchEntries, readEntryText, listFiles } from "../archive/surgical-asar.mjs";
 import { sha256File, sha256Buf, verifyPatchedArchive, atomicCopyFile } from "../archive/verify.mjs";
 import { findZcodeInstall, isZcodeRunning, forceCloseZcode } from "../platform.mjs";
+import { inspectAsarIntegrity } from "./asar-integrity.mjs";
 
 function snippet(name) {
   return fs.readFileSync(new URL(`./snippets/${name}`, import.meta.url), "utf8");
@@ -31,26 +31,13 @@ function patchHtml(html, scriptRel) {
   return html.slice(0, idx) + "  " + tag + "\n  " + html.slice(idx);
 }
 
-// macOS: ElectronAsarIntegrity (if configured) makes any patched asar refuse
-// to load. Detect it in Info.plist up front rather than bricking the app.
 function checkAsarIntegrityFuse(appBaseDir) {
-  if (process.platform !== "darwin") return null;
-  const plist = path.join(appBaseDir, "Contents", "Info.plist");
-  if (!fs.existsSync(plist)) return null;
-  try {
-    const out = spawnSync("/usr/bin/plutil", ["-extract", "ElectronAsarIntegrity", "raw", "-o", "-", plist], {
-      encoding: "utf8",
-      timeout: 10000,
-    });
-    if (out.status === 0 && (out.stdout || "").trim().length > 0) {
-      throw new Error(
-        "ZCode 启用了 ElectronAsarIntegrity（app.asar 完整性校验），注入层不可用。CLI/skill 层不受影响。",
-      );
-    }
-  } catch (e) {
-    if (String(e.message).startsWith("ZCode 启用了")) throw e;
-  }
-  return null;
+  const integrity = inspectAsarIntegrity(appBaseDir);
+  if (integrity.status === "enabled")
+    throw new Error("ZCode 的 EnableEmbeddedAsarIntegrityValidation fuse 已启用（app.asar 完整性校验），注入层不可用。CLI/skill 层不受影响。");
+  if (integrity.status === "unknown")
+    throw new Error(`无法确认 Electron ASAR 完整性校验开关，已停止注入，未修改应用：${integrity.error}`);
+  return integrity;
 }
 
 // Build the desired patched entry contents from an UNPATCHED source archive
@@ -94,11 +81,11 @@ function writePatchedArchive(resourcesDir, asarPath, sourceAsar, targets, desire
   const patchedHash = sha256File(asarPath);
   const st = fs.statSync(asarPath);
   saveManifest({
+    ...manifestBase,
     tool: "zcode-model-hub",
     patchVersion: PATCH_VERSION,
     sentinel: SENTINEL,
     platform: process.platform,
-    ...manifestBase,
     resourcesDir,
     asarPath,
     targets,
@@ -156,6 +143,8 @@ export async function install({
       backupAsar && fs.existsSync(backupAsar) && m0.patchedHash === curHash;
 
     if (canRebuild) {
+      if (sha256File(backupAsar) !== m0.originalHash)
+        throw new Error("原版备份哈希不匹配，已停止升级，当前 app.asar 未改动");
       const desired = buildPatchedEntries(backupAsar, targets);
       const unchanged =
         m0.entryHashes &&
@@ -176,11 +165,11 @@ export async function install({
     if (!m0 || m0.patchedHash !== curHash) {
       const st = fs.statSync(asarPath);
       saveManifest({
+        ...(m0 || {}),
         tool: "zcode-model-hub",
         patchVersion: PATCH_VERSION,
         sentinel: SENTINEL,
         platform: process.platform,
-        ...(m0 || {}),
         resourcesDir,
         asarPath,
         appBaseDir,
@@ -240,6 +229,8 @@ export async function restore({
 
   const backup = backupPathFor(m.originalHash);
   if (!fs.existsSync(backup)) throw new Error(`找不到原版备份：${backup}`);
+  if (sha256File(backup) !== m.originalHash)
+    throw new Error("原版备份哈希不匹配，已停止还原，当前 app.asar 未改动");
 
   const currentHash = sha256File(asarPath);
   if (currentHash === m.originalHash) return { ok: true, note: "当前已是官方原版，无需还原。" };
@@ -252,7 +243,7 @@ export async function restore({
     if (!_forceCloseFn()) throw new Error("无法退出 ZCode 进程，已放弃。");
   }
 
-  atomicCopyFile(backup, asarPath, { expectSize: fs.statSync(backup).size });
+  atomicCopyFile(backup, asarPath, { expectSize: fs.statSync(backup).size, expectHash: m.originalHash });
   // keep the manifest (patched state is gone; originalHash stays useful)
   const st = fs.statSync(asarPath);
   m.restoredAt = new Date().toISOString();
@@ -270,6 +261,7 @@ export function inspectInjection({ resourcesOverride } = {}) {
   const { asarPath, appBaseDir } = disc;
   const m = loadManifest();
   const out = { found: true, asarPath, manifest: m, hash: null, sentinelPresent: false, layoutOk: false, targets: null, foreign: [] };
+  out.asarIntegrity = inspectAsarIntegrity(appBaseDir);
   try {
     const targets = discoverTargets(asarPath);
     out.targets = targets;

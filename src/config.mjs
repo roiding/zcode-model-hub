@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { zcodeConfigPath } from "./platform.mjs";
-import { atomicWriteBuffer } from "./archive/verify.mjs";
+import { atomicWriteBuffer, atomicCopyFile } from "./archive/verify.mjs";
 
 export function readConfig(configPath = zcodeConfigPath()) {
   if (!fs.existsSync(configPath)) return null;
@@ -15,15 +15,21 @@ export function readConfig(configPath = zcodeConfigPath()) {
   }
 }
 
-export function writeConfigAtomic(cfg, configPath = zcodeConfigPath()) {
+export function writeConfigAtomic(cfg, configPath = zcodeConfigPath(), { expectedContent } = {}) {
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  const checkUnchanged = () => {
+    if (expectedContent !== undefined && fs.readFileSync(configPath, "utf8") !== expectedContent)
+      throw new Error("config.json changed during save; retry the sync instead of overwriting newer settings");
+  };
+  checkUnchanged();
   if (fs.existsSync(configPath)) {
     const bak = configPath + ".model-hub.bak";
-    fs.rmSync(bak + ".model-hub-tmp", { force: true });
-    fs.copyFileSync(configPath, bak + ".model-hub-tmp");
-    fs.renameSync(bak + ".model-hub-tmp", bak);
+    atomicCopyFile(configPath, bak, { mode: 0o600 });
   }
-  atomicWriteBuffer(configPath, Buffer.from(JSON.stringify(cfg, null, 2), "utf8"));
+  atomicWriteBuffer(configPath, Buffer.from(JSON.stringify(cfg, null, 2), "utf8"), {
+    mode: 0o600,
+    beforeRename: checkUnchanged,
+  });
 }
 
 // Normalize the provider section into [{ key, id, kind, baseURL, apiKey, models }].
@@ -40,6 +46,7 @@ export function listProviders(cfg) {
       kind: p.kind || "openai-compatible",
       baseURL: opts.baseURL || p.baseURL || "",
       apiKey: opts.apiKey || p.apiKey || "",
+      headers: p.headers || {},
       models: p.models || {},
     });
   };
@@ -60,8 +67,12 @@ function providerSection(cfg) {
 function getProviderEntry(cfg, key) {
   const section = providerSection(cfg);
   if (Array.isArray(section)) {
-    const idx = section.findIndex((p) => p && (p.id === key || p.name === key || String(section.indexOf(p)) === key));
-    return { container: section, idx };
+    const index = typeof key === "number"
+      ? key
+      : section.findIndex((provider, position) => provider && (provider.id === key || provider.name === key || String(position) === key));
+    if (!Number.isInteger(index) || index < 0 || !section[index])
+      throw new Error(`provider not found: ${key}`);
+    return { container: section, idx: index };
   }
   if (section && typeof section === "object") {
     if (!Object.prototype.hasOwnProperty.call(section, key)) section[key] = {};
@@ -139,11 +150,26 @@ export function mergeFetchedModels(cfg, providerKey, fetched, { selected } = {})
 }
 
 // Pull-models entry used by the CLI: fetch + merge + write in one shot.
-export async function syncProvider(cfg, provider, { dialect, selected, timeoutMs } = {}) {
+export async function syncProvider(cfg, provider, { dialect, selected, timeoutMs, configPath } = {}) {
   const { fetchModels } = await import("./providers/index.mjs");
   if (!provider.baseURL) throw new Error(`provider ${provider.id} has no baseURL`);
-  const res = await fetchModels(provider.baseURL, provider.apiKey, { dialect, timeoutMs });
+  const res = await fetchModels(provider.baseURL, provider.apiKey, { dialect, timeoutMs, headers: provider.headers });
   if (!res.ok) return res;
-  const merge = mergeFetchedModels(cfg, provider.key, res.models, { selected });
+  let targetKey = provider.key;
+  let expectedContent;
+  if (configPath !== undefined) {
+    expectedContent = fs.readFileSync(configPath, "utf8");
+    cfg = JSON.parse(expectedContent);
+    const matches = listProviders(cfg).filter((current) =>
+      (Array.isArray(cfg.provider) ? current.id === provider.id : current.key === provider.key) &&
+      current.baseURL === provider.baseURL && current.apiKey === provider.apiKey &&
+      JSON.stringify(current.headers) === JSON.stringify(provider.headers || {}),
+    );
+    if (matches.length !== 1)
+      throw new Error(`provider ${provider.id} changed or was removed during fetch; retry the sync`);
+    targetKey = matches[0].key;
+  }
+  const merge = mergeFetchedModels(cfg, targetKey, res.models, { selected });
+  if (configPath !== undefined) writeConfigAtomic(cfg, configPath, { expectedContent });
   return { ok: true, dialect: res.dialect, total: res.models.length, added: merge.added, models: res.models };
 }

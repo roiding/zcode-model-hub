@@ -35,7 +35,7 @@ MutationObserver 自适应 UI 与 [CSSZYF/zcode-modelhub-patch](https://github.c
 层3 自动重装（零常驻进程）
   macOS  : LaunchAgent（RunAtLoad + WatchPaths，内核事件驱动）
   Windows: 计划任务（登录时 + 每 6 小时，一次性运行毫秒级结束）
-  Linux  : systemd user .path unit（PathChanged，inotify）
+  Linux  : systemd user oneshot service（登录时）+ .path unit（PathChanged，inotify）
   ensure 快路径 = 一次 stat()；只有真发生更新才付出 哈希 0.3s + 重打包 1~5s
 ```
 
@@ -76,13 +76,15 @@ node bin/zcode-model-hub.mjs sync --all
 
 选项：`--resources <dir>` 显式指定安装路径；`--force-close` 写入前强制关闭 ZCode（默认拒绝在运行时写入）。
 
+`sync --all --json` 会同步全部供应商，并仅输出一个 JSON 结果数组；`sync --list --json` 只列出供应商。任一供应商同步失败时退出码为 `1`，成功的供应商仍会保存。同步在网络请求结束后重新读取配置，只合并目标供应商；若供应商凭据发生变化或保存时检测到并发修改，会拒绝覆盖并提示重试。
+
 ## 安全模型
 
-- **写入前**：ZCode 运行中一律拒绝（自动模式一律延迟，绝不自动杀进程）；检测到其他补丁（上游两项目的标记）拒绝叠加；macOS 检测 `ElectronAsarIntegrity`（fuse 启用时注入层不可用，明确报告而不是写坏应用）。
+- **写入前**：ZCode 运行中一律拒绝（自动模式一律延迟，绝不自动杀进程）；检测到其他补丁（上游两项目的标记）拒绝叠加；macOS 读取 Electron Framework 二进制的 `EnableEmbeddedAsarIntegrityValidation` fuse（启用或无法确认时停止注入；不会把 Info.plist 中存在哈希元数据误判为启用）。
 - **写入时**：同目录临时文件 + fsync + 尺寸校验 + 条目哈希读回校验 + 原子改名；手术式重打包保留原数据区与 `app.asar.unpacked`。
-- **备份**：按官方构建哈希分目录冷备份，保留最近 2 个版本；`restore` 拒绝把未知状态错还原成旧版本（`--force` 覆盖）。
+- **备份**：按官方构建哈希分目录冷备份，保留最近 2 个版本；`restore` 替换前校验备份与临时副本的原始哈希，拒绝损坏备份，也拒绝把未知状态错还原成旧版本（`--force` 仅覆盖后者）。
 - **更新竞态**：双次哈希 debounce 识别"更新进行中"；正在运行 → 记录 pending，下次触发/启动前补齐。
-- **隐私**：API key 只进用户自己的配置，不写日志、不进 manifest、错误信息自动脱敏（`key=***`）。
+- **隐私**：API key 只进用户自己的配置，不写日志、不进 manifest、错误信息自动脱敏（`key=***`）；POSIX 系统上的配置与配置备份以 `0600` 权限保存。模型拉取仅跟随同源、同协议 GET 重定向，拒绝跨域或 HTTPS 降级；视觉探测 POST 不自动重放重定向。
 - **防呆**：`ensure` 的自动重装被强制锁定到它检查过的那个 resources 目录（回归测试覆盖）。
 
 ## 使用（注入后）
@@ -94,22 +96,27 @@ node bin/zcode-model-hub.mjs sync --all
 5. 可选「🧬 模拟请求头」：为该供应商写入 `provider.headers`——ZCode 原生支持该字段并把它附加到发往此供应商的**所有**请求，只是没有官方 UI。用于只放行特定客户端指纹（claude-cli / codex_cli_rs）的中转站：内置 Claude Code / Codex CLI 预设，逐条可编辑，session_id 一键换新，一键清除；拉取模型与视觉探测也会自动携带这些头。
    ⚠️ 已知限制：之后在 ZCode 自带界面里重新保存该供应商，ZCode 可能剥离 headers（上游 modelhub-patch 为此专门打了粘性引擎补丁，本项目刻意不改 ZCode 压缩代码）——被剥掉时重开「🧬」窗口再点一次应用即可。
 
+同一网关配置多个渠道时，会结合密钥和当前供应商名称定位，并在弹窗打开后固定保存目标；无法唯一定位或期间供应商已删除/变更时会拒绝写入。若修改了已有供应商的 API Key，请先在原生界面保存，再拉取模型。明确完成的视觉探测结果会更新已有模型的输入能力，单纯的名称猜测不会覆盖已有配置。
+
 ## 开发
 
 ```bash
 node scripts/check-syntax.mjs   # 全模块 + 注入载荷语法检查
-node --test                     # 28 个测试：asar 手术/校验、动态目标发现、
-                                # 三方言解析、配置合并/墓碑、ensure 状态机、
-                                # 以及"模拟 ZCode 更新 → ensure 自动重装"端到端
+node --test                     # asar/恢复、三方言、配置并发与权限、UI 事件、
+                                # 重定向与完整响应超时、CLI JSON/退出码、
+                                # 调度器生成内容及"模拟更新 → ensure 重装"回归
 ```
 
 测试中的集成流程使用合成 asar 夹具（`test/helpers.mjs`），不触碰真实安装。
+UI 与网络回归使用 DOM/请求桩；Windows 计划任务和 Linux systemd 的生成内容有测试，但仍需在对应系统进行实际调度验证。
+
+已有安装更新本项目源码后，需要完全退出 ZCode，再重新运行 `node bin/zcode-model-hub.mjs install`，将修复后的注入代码与触发器部署到应用；只修改本仓库文件不会自动改变已安装的注入载荷。
 
 ## 平台注意事项与故障排查
 
 ### macOS
 - **写入 /Applications 报 EPERM**（Ventura 引入、Sequoia 最严格）：修改其他 App 的内容需要「App 管理」权限。系统设置 → 隐私与安全性 → App 管理 → 打开**运行本命令的应用**（在 ZCode 会话里跑就开 ZCode，在终端跑就开那个终端；列表里没有就 ➕ 手动添加 `/Applications/ZCode.app`）→ **完全退出并重开该应用**（TCC 授权只对重启后的进程生效）→ 重试。**sudo 无法绕过**。CLI 检测到这种情况会直接打印本指引。
-- **ElectronAsarIntegrity（asar 完整性 fuse）**：若 ZCode 某天启用了它，被改过的 app.asar 会拒绝加载。`doctor` 会提前检测 Info.plist 并明确报告 `ENABLED`，注入层不会动手，CLI/技能层不受影响。
+- **ASAR 完整性 fuse**：Info.plist 中的 `ElectronAsarIntegrity` 只是打包时写入的哈希元数据，存在该字段不代表校验已开启。`install` / `doctor` 读取 Electron Framework 中真正的 `EnableEmbeddedAsarIntegrityValidation` 开关；关闭时允许注入，开启时报告 `ENABLED` 并拒绝修改。通用二进制会检查两个架构，任一架构开启就拒绝；未知格式或读取失败会明确报错，不会擅自关闭 fuse、修改 plist 或重新签名。CLI/技能层不受影响。
 - **LaunchAgent 触发器**：注册在当前用户 `~/Library/LaunchAgents/com.zcode-model-hub.repair.plist`，其中写死了安装时的 node 绝对路径——升级或切换 nvm Node 版本后需重跑 `install` / `watch` 重新注册。`launchctl` 变更无需 sudo。
 
 ### Windows

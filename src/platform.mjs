@@ -70,12 +70,18 @@ export function appBaseCandidates() {
   ];
 }
 
+export function appBaseDirFor(resourcesDir, platform = OS) {
+  const parent = path.dirname(resourcesDir);
+  return platform === "darwin" && path.basename(parent) === "Contents" ? path.dirname(parent) : parent;
+}
+
 // Returns { resourcesDir, asarPath, appBaseDir, kind: "app"|"appimage" } or null.
 export function findZcodeInstall(explicitResources) {
   if (explicitResources) {
-    const asarPath = path.join(explicitResources, "app.asar");
+    const resourcesDir = path.resolve(explicitResources);
+    const asarPath = path.join(resourcesDir, "app.asar");
     if (!fs.existsSync(asarPath)) throw new Error(`no app.asar under ${explicitResources}`);
-    return { resourcesDir: explicitResources, asarPath, appBaseDir: path.dirname(explicitResources), kind: "app" };
+    return { resourcesDir, asarPath, appBaseDir: appBaseDirFor(resourcesDir), kind: "app" };
   }
 
   // AppImage: read-only squashfs mount — patch layer is unsupported there.
@@ -93,7 +99,7 @@ export function findZcodeInstall(explicitResources) {
       return {
         resourcesDir: c,
         asarPath: path.join(c, "app.asar"),
-        appBaseDir: path.dirname(c),
+        appBaseDir: appBaseDirFor(c),
         kind: "app",
       };
     }

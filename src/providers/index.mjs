@@ -82,26 +82,52 @@ export function parseModelsResponse(dialect, json) {
   return [...new Set(out)].sort().map((id) => ({ id, visionGuess: visionGuess(id) }));
 }
 
+async function requestText(url, { headers, method = "GET", body, timeoutMs, signal }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const abort = () => controller.abort(signal.reason);
+  if (signal?.aborted) abort();
+  else signal?.addEventListener("abort", abort, { once: true });
+  try {
+    let target = new URL(url);
+    for (let redirects = 0; ; redirects++) {
+      const response = await fetch(target.href, { headers, method, body, signal: controller.signal, redirect: "manual" });
+      const location = response.headers.get("location");
+      if (response.status >= 300 && response.status < 400 && location) {
+        await response.body?.cancel();
+        const next = new URL(location, target);
+        if (next.origin !== target.origin)
+          throw new Error("blocked cross-origin or protocol-changing redirect");
+        if (method !== "GET" && method !== "HEAD") throw new Error("blocked redirect of a probe request");
+        if (redirects >= 3) throw new Error("too many redirects");
+        target = next;
+        continue;
+      }
+      return { ok: response.ok, status: response.status, text: await response.text() };
+    }
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", abort);
+  }
+}
+
 export async function fetchModels(baseUrl, apiKey, { dialect = "auto", headers, timeoutMs = 10000, signal } = {}) {
   const dialects = dialect === "auto" ? ["openai", "anthropic", "gemini"] : [dialect];
   const errors = [];
   for (const d of dialects) {
     for (const url of candidatesFor(d, baseUrl)) {
+      if (signal?.aborted) return { ok: false, error: "aborted" };
       const target =
         d === "gemini" && !url.includes("key=") && apiKey
           ? `${url}${url.includes("?") ? "&" : "?"}key=${encodeURIComponent(apiKey.trim())}`
           : url;
       try {
-        const ctrl = new AbortController();
-        const t = setTimeout(() => ctrl.abort(), timeoutMs);
-        if (signal) signal.addEventListener("abort", () => ctrl.abort(), { once: true });
-        const res = await fetch(target, { headers: authHeaders(d, apiKey, headers), signal: ctrl.signal });
-        clearTimeout(t);
+        const res = await requestText(target, { headers: authHeaders(d, apiKey, headers), timeoutMs, signal });
         if (!res.ok) {
           errors.push(`${d} ${redactUrl(target)} -> HTTP ${res.status}`);
           continue;
         }
-        const json = await res.json();
+        const json = JSON.parse(res.text);
         const models = parseModelsResponse(d, json);
         if (models.length) return { ok: true, dialect: d, models };
         errors.push(`${d} ${redactUrl(target)} -> 0 models`);
@@ -121,11 +147,12 @@ export function redactUrl(url) {
 export const PNG_1PX =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
-export async function probeVision(baseUrl, apiKey, model, { dialect = "auto", headers, timeoutMs = 15000 } = {}) {
+export async function probeVision(baseUrl, apiKey, model, { dialect = "auto", headers, timeoutMs = 15000, signal } = {}) {
   const base = normalizeBase(baseUrl);
   const attempts =
     dialect === "auto" ? ["openai", "anthropic"] : [dialect];
   for (const d of attempts) {
+    if (signal?.aborted) return { ok: false, error: "aborted" };
     const url =
       d === "anthropic"
         ? `${/\/v1$/.test(base) ? base : `${base}/v1`}/messages`
@@ -159,16 +186,14 @@ export async function probeVision(baseUrl, apiKey, model, { dialect = "auto", he
             ],
           };
     try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), timeoutMs);
-      const res = await fetch(url, {
+      const res = await requestText(url, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders(d, apiKey, headers) },
         body: JSON.stringify(body),
-        signal: ctrl.signal,
+        timeoutMs,
+        signal,
       });
-      clearTimeout(t);
-      const text = await res.text();
+      const text = res.text;
       if (res.ok) return { ok: true, vision: true, dialect: d };
       if (res.status === 400 && /image|multimodal|vision|modalit/i.test(text))
         return { ok: true, vision: false, dialect: d, detail: "rejected image input" };

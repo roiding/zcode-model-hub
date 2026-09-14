@@ -28,28 +28,52 @@ export function sha256File(file) {
 
 // Write buffer to dest atomically. expectSize (if given) is verified on the
 // temp file before rename.
-export function atomicWriteBuffer(dest, buf, { expectSize } = {}) {
-  const tmp = dest + ".model-hub-tmp";
-  fs.rmSync(tmp, { force: true });
-  const fd = fs.openSync(tmp, "w");
-  fs.writeSync(fd, buf);
-  fs.fsyncSync(fd);
-  fs.closeSync(fd);
-  const got = fs.statSync(tmp).size;
-  if (expectSize !== undefined && got !== expectSize)
-    failClean(tmp, `size mismatch on temp file: got ${got}, expected ${expectSize}`);
-  fs.renameSync(tmp, dest);
+export function atomicWriteBuffer(dest, buf, { expectSize = buf.length, mode, beforeRename } = {}) {
+  const temporary = `${dest}.model-hub-${crypto.randomUUID()}.tmp`;
+  const permissions = mode ?? (fs.existsSync(dest) ? fs.statSync(dest).mode & 0o777 : 0o666);
+  try {
+    const descriptor = fs.openSync(temporary, "wx", permissions);
+    try {
+      fs.writeFileSync(descriptor, buf);
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    const actualSize = fs.statSync(temporary).size;
+    if (actualSize !== expectSize)
+      failClean(temporary, `size mismatch on temp file: got ${actualSize}, expected ${expectSize}`);
+    if (beforeRename) beforeRename();
+    fs.renameSync(temporary, dest);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
 }
 
 // Copy src -> dest atomically (used for backups/restores).
-export function atomicCopyFile(src, dest, { expectSize } = {}) {
-  const tmp = dest + ".model-hub-tmp";
-  fs.rmSync(tmp, { force: true });
-  fs.copyFileSync(src, tmp);
-  const got = fs.statSync(tmp).size;
-  if (expectSize !== undefined && got !== expectSize)
-    failClean(tmp, `size mismatch on temp copy: got ${got}, expected ${expectSize}`);
-  fs.renameSync(tmp, dest);
+export function atomicCopyFile(src, dest, { expectSize, expectHash, mode } = {}) {
+  const temporary = `${dest}.model-hub-${crypto.randomUUID()}.tmp`;
+  try {
+    fs.copyFileSync(src, temporary, fs.constants.COPYFILE_EXCL);
+    if (mode !== undefined) fs.chmodSync(temporary, mode);
+    const copiedStat = fs.statSync(temporary);
+    const actualSize = copiedStat.size;
+    if (expectSize !== undefined && actualSize !== expectSize)
+      failClean(temporary, `size mismatch on temp copy: got ${actualSize}, expected ${expectSize}`);
+    if (expectHash !== undefined && sha256File(temporary) !== expectHash)
+      failClean(temporary, "hash mismatch on temp copy");
+    const copiedMode = copiedStat.mode & 0o777;
+    if (!(copiedMode & 0o200)) fs.chmodSync(temporary, copiedMode | 0o200);
+    const descriptor = fs.openSync(temporary, "r+");
+    try {
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    if (!(copiedMode & 0o200)) fs.chmodSync(temporary, copiedMode);
+    fs.renameSync(temporary, dest);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
 }
 
 function failClean(tmp, msg) {

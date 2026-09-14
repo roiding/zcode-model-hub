@@ -9,8 +9,8 @@ import { makeFakeZcode, tempStateDir } from "./helpers.mjs";
 import { discoverTargets, isAlreadyPatched, detectForeignPatches } from "../src/patch/discover-targets.mjs";
 import { packDir, readEntryText } from "../src/archive/surgical-asar.mjs";
 import { sha256File } from "../src/archive/verify.mjs";
-import { loadManifest, listBackups, readPending, pruneBackups, saveManifest } from "../src/patch/manifest.mjs";
-import { install, restore } from "../src/patch/apply.mjs";
+import { loadManifest, listBackups, readPending, pruneBackups, saveManifest, backupPathFor, PATCH_VERSION } from "../src/patch/manifest.mjs";
+import { install, restore, inspectInjection } from "../src/patch/apply.mjs";
 import { runEnsure } from "../src/repair/ensure.mjs";
 
 const NOT_RUNNING = () => false;
@@ -211,4 +211,76 @@ test("backup pruning keeps only the last 2 ZCode versions", async () => {
   assert.equal(m.originalHash, officialHashC); // manifest matches the current official build
   pruneBackups(2, state); // idempotent
   assert.equal(listBackups(state).length, 2);
+});
+
+test("restore refuses a corrupted cold backup without changing the live archive", async () => {
+  process.env.ZCODE_MODEL_HUB_STATE_DIR = tempStateDir();
+  const fixture = makeFakeZcode();
+  await install({ resourcesOverride: fixture.resources, _isRunning: NOT_RUNNING });
+  const manifest = loadManifest();
+  const liveHash = sha256File(fixture.asar);
+  fs.writeFileSync(backupPathFor(manifest.originalHash), "BROKEN BACKUP");
+  await assert.rejects(() => restore({ resourcesOverride: fixture.resources, _isRunning: NOT_RUNNING }), /备份哈希不匹配/);
+  assert.equal(sha256File(fixture.asar), liveHash);
+});
+
+test("snippet upgrades refresh patchVersion instead of retaining the old manifest version", async () => {
+  process.env.ZCODE_MODEL_HUB_STATE_DIR = tempStateDir();
+  const fixture = makeFakeZcode();
+  await install({ resourcesOverride: fixture.resources, _isRunning: NOT_RUNNING });
+  const manifest = loadManifest();
+  manifest.patchVersion = "old-version";
+  manifest.entryHashes[manifest.targets.uiScript] = "changed";
+  saveManifest(manifest);
+  const result = await install({ resourcesOverride: fixture.resources, _isRunning: NOT_RUNNING });
+  assert.equal(result.updated, true);
+  assert.equal(loadManifest().patchVersion, PATCH_VERSION);
+});
+
+function macIntegrityFixture(states) {
+  process.env.ZCODE_MODEL_HUB_STATE_DIR = tempStateDir();
+  const fixture = makeFakeZcode();
+  const contents = path.join(fixture.outDir, "ZCode.app", "Contents");
+  const resources = path.join(contents, "Resources");
+  fs.mkdirSync(resources, { recursive: true });
+  const archive = path.join(resources, "app.asar");
+  fs.copyFileSync(fixture.asar, archive);
+  fs.writeFileSync(path.join(contents, "Info.plist"), '<?xml version="1.0"?><plist version="1.0"><dict><key>ElectronAsarIntegrity</key><dict><key>Resources/app.asar</key><dict><key>algorithm</key><string>SHA256</string><key>hash</key><string>fixture</string></dict></dict></dict></plist>');
+  const binaryPath = path.join(contents, "Frameworks", "Electron Framework.framework", "Electron Framework");
+  if (states !== undefined) {
+    fs.mkdirSync(path.dirname(binaryPath), { recursive: true });
+    fs.writeFileSync(binaryPath, Buffer.concat([Buffer.from("dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX"), Buffer.from([1, states.length]), Buffer.from(states)]));
+  }
+  return { resources, archive, binaryPath, contents };
+}
+
+test("macOS enabled ASAR validation fuse blocks installation", { skip: process.platform !== "darwin" }, async () => {
+  const fixture = macIntegrityFixture("101110011");
+  const originalHash = sha256File(fixture.archive);
+  await assert.rejects(() => install({ resourcesOverride: fixture.resources, _isRunning: NOT_RUNNING }), /EnableEmbeddedAsarIntegrityValidation fuse 已启用/);
+  assert.equal(sha256File(fixture.archive), originalHash);
+});
+
+test("macOS plist metadata with a disabled fuse permits install and snippet upgrades", { skip: process.platform !== "darwin" }, async () => {
+  const fixture = macIntegrityFixture("101100011");
+  const binaryBefore = fs.readFileSync(fixture.binaryPath);
+  const plistPath = path.join(fixture.contents, "Info.plist");
+  const plistBefore = fs.readFileSync(plistPath);
+  const result = await install({ resourcesOverride: fixture.resources, _isRunning: NOT_RUNNING });
+  assert.equal(result.ok, true);
+  const manifest = loadManifest();
+  manifest.entryHashes[manifest.targets.uiScript] = "changed";
+  saveManifest(manifest);
+  const upgrade = await install({ resourcesOverride: fixture.resources, _isRunning: NOT_RUNNING });
+  assert.equal(upgrade.updated, true);
+  assert.equal(inspectInjection({ resourcesOverride: fixture.resources }).asarIntegrity.status, "disabled");
+  assert.deepEqual(fs.readFileSync(fixture.binaryPath), binaryBefore);
+  assert.deepEqual(fs.readFileSync(plistPath), plistBefore);
+});
+
+test("macOS unknown fuse state is reported honestly and leaves the archive untouched", { skip: process.platform !== "darwin" }, async () => {
+  const fixture = macIntegrityFixture();
+  const originalHash = sha256File(fixture.archive);
+  await assert.rejects(() => install({ resourcesOverride: fixture.resources, _isRunning: NOT_RUNNING }), /无法确认.*完整性校验开关/);
+  assert.equal(sha256File(fixture.archive), originalHash);
 });
