@@ -83,68 +83,53 @@
     return btn;
   }
 
-  // Preferred placement (modelhub-style): right side of the header row of
-  // the model list table (the row with 模型/ID/操作 column captions).
-  function findModelListRow() {
-    // 1. Locate the 模型列表 section label (or the table column captions).
-    var leaves = document.querySelectorAll("div,span,label,p,td,th");
-    var section = null;
+  // Preferred placement (modelhub-style):
+  // Find the "模型列表" title element. Turn its line into a clean flex row
+  // with the title on the left and the action buttons right-aligned at the far right.
+  function injectToolbarAtModelList() {
+    var leaves = document.querySelectorAll("h1,h2,h3,h4,h5,h6,span,label,p,div");
+    var titleEl = null;
     for (var i = 0; i < leaves.length; i++) {
       var el = leaves[i];
-      if (el.children.length) continue; // leaf nodes only
+      if (el.children.length > 0) continue; // leaf only
       var t = (el.textContent || "").trim();
-      if (!/^(模型列表[:：]?|model list|models)$/i.test(t)) continue;
-      var r = el.getBoundingClientRect();
-      if (r.width === 0 || r.height === 0) continue; // hidden
-      section = el;
-      break;
+      if (/^(模型列表[:：]?|model list|models)$/i.test(t)) {
+        var r = el.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) {
+          titleEl = el;
+          break;
+        }
+      }
     }
-    if (!section) return null;
+    if (!titleEl) return false;
 
-    // 2. The header row must be wide (column captions span the section),
-    //    directly below the label vertically, and NOT inside the label's
-    //    own subtree (so we never inject into the title line itself).
-    var sec = section.getBoundingClientRect();
-    var rows = document.querySelectorAll("div");
-    var best = null;
-    for (var j = 0; j < rows.length; j++) {
-      var row = rows[j];
-      if (row === section || section.contains(row) || row.contains(section)) continue;
-      if (row.querySelector("#" + BTN_ID) && row.getAttribute("data-model-hub-row")) continue;
-      var rr = row.getBoundingClientRect();
-      if (rr.width === 0 || rr.height === 0) continue;
-      // same column as the label, vertically just beneath it
-      if (Math.abs((rr.left + rr.right) / 2 - (sec.left + sec.right) / 2) > 80) continue;
-      if (rr.top < sec.bottom - 4 || rr.top > sec.bottom + 120) continue;
-      // wide enough to be the table header (≥60% of the section width)
-      if (rr.width < sec.width * 0.6) continue;
-      // shallow: avoid wrapping the whole model list content area
-      if (row.querySelectorAll("input,button").length > 12) continue;
-      if (!best || rr.width < best.getBoundingClientRect().width) best = row;
-    }
-    return best;
-  }
+    // Find the immediate row/block containing this title
+    var row = titleEl.parentElement;
+    if (!row) return false;
 
-  function ensureButtonsInRow(row) {
-    if (row.getAttribute("data-model-hub-row")) return;
-    if (row.querySelector("#" + BTN_ID)) return;
+    // Avoid duplicate injection
+    if (row.querySelector("#" + BTN_ID) || row.getAttribute("data-model-hub-row")) return true;
+
+    // Make the title container flex between so title is on left, buttons on far right
     row.setAttribute("data-model-hub-row", "1");
-    var wrap = document.createElement("span");
-    wrap.style.cssText = "display:inline-flex;gap:8px;align-items:center";
-    try {
-      wrap.style.marginLeft = getComputedStyle(row).display.indexOf("flex") >= 0 ? "auto" : "12px";
-    } catch (e) {
-      wrap.style.marginLeft = "12px";
-    }
+    row.style.display = "flex";
+    row.style.justifyContent = "space-between";
+    row.style.alignItems = "center";
+    row.style.width = "100%";
+    row.style.marginBottom = "8px";
+
+    var wrap = document.createElement("div");
+    wrap.style.cssText = "display:inline-flex;gap:8px;align-items:center;margin-left:auto";
     wrap.appendChild(
-      makeSubtleButton("⚡️ 拉取模型", "zcode-model-hub：根据当前 Base URL 和 API Key 自动拉取可用模型列表", onPullClick, BTN_ID),
+      makeSubtleButton("⚡️ 拉取模型", "zcode-model-hub：根据当前 Base URL 和 API Key 自动拉取可用模型列表", onPullClick, BTN_ID)
     );
     wrap.appendChild(
       makeSubtleButton("🧬 模拟请求头", "zcode-model-hub：为该供应商配置 Claude Code / Codex CLI 请求头模拟（写入 provider.headers）", function () {
         onHeadersClick();
-      }),
+      })
     );
     row.appendChild(wrap);
+    return true;
   }
 
   // Fallback placement for builds without a 模型列表 label: sit right after
@@ -186,11 +171,7 @@
 
   function checkAndInject() {
     if (!api()) return;
-    var row = findModelListRow();
-    if (row) {
-      ensureButtonsInRow(row);
-      return;
-    }
+    if (injectToolbarAtModelList()) return;
     var hits = findAddModelButtons();
     for (var i = 0; i < hits.length; i++) ensureButtonNextTo(hits[i]);
   }
