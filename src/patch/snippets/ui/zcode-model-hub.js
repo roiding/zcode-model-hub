@@ -1,7 +1,7 @@
 /* __ZCODE_MODEL_HUB_V1__ renderer UI (injected as out/renderer/zcode-model-hub.js).
- * Adaptive by design: finds the "add model" button via semantic features
- * (button text / aria-label / i18n-ish hints) instead of minified identifiers,
- * and re-scans on DOM mutations so SPA navigation works across versions.
+ * Adaptive by design: locates the "模型列表" label via semantic features
+ * (text / tag / design-token classes) and re-scans on DOM mutations so SPA
+ * navigation works across versions. If the label is absent we stay silent.
  * Requires window.zcodeModelHub (installed by the preload bridge). */
 ;(function () {
   "use strict";
@@ -9,7 +9,6 @@
   window.__ZCODE_MODEL_HUB_V1_UI__ = true;
 
   var BTN_ID = "zcode-model-hub-btn";
-  var ADD_RE = /^(添加模型|新增模型|添加|add model|add a model|new model)$/i;
 
   function api() {
     return window.zcodeModelHub || null;
@@ -34,29 +33,10 @@
     } catch (e) {}
   }
 
-  // ---- injection point discovery (semantic, multi-fallback) ----
-  // "+ 添加模型" and icon-prefixed variants normalize down to 添加模型.
-  function normalizeBtnText(s) {
-    return (s || "").trim().replace(/[\s+＋·•]+/g, "");
-  }
-  function findAddModelButtons() {
-    var hits = [];
-    var buttons = document.querySelectorAll("button");
-    for (var i = 0; i < buttons.length; i++) {
-      var b = buttons[i];
-      if (b.id === BTN_ID) continue;
-      if (b.getAttribute("data-model-hub-near")) continue;
-      var text = normalizeBtnText(b.textContent);
-      var label = normalizeBtnText(b.getAttribute("aria-label") || b.title || "");
-      var okText = ADD_RE.test(text) && text.length <= 12;
-      var okLabel = ADD_RE.test(label) && label.length <= 12;
-      if (!okText && !okLabel) continue;
-      var r = b.getBoundingClientRect();
-      if (r.width === 0 && r.height === 0) continue; // hidden
-      hits.push(b);
-    }
-    return hits;
-  }
+  // ---- injection point discovery (semantic) ----
+  // Locate the "模型列表" label (see injectToolbarAtModelList). If it is not
+  // found we do nothing — the CLI/skill layer still works, and injecting into
+  // an arbitrary "添加" button would only produce stray buttons.
 
   // Subtle native-looking button: plain outline, no gradient/glow.
   function makeSubtleButton(label, title, onClick, id) {
@@ -145,46 +125,13 @@
 
   // Fallback placement for builds without a 模型列表 label: sit right after
   // the add-model button, matching its rendered metrics.
-  function ensureButtonNextTo(target) {
-    if (target.getAttribute("data-model-hub-near")) return;
-    var next = target.nextElementSibling;
-    if (next && next.id === BTN_ID) return;
-    target.setAttribute("data-model-hub-near", "1");
-    var pull = makeSubtleButton("⚡️ 拉取模型", "zcode-model-hub：根据当前 Base URL 和 API Key 自动拉取可用模型列表", onPullClick, BTN_ID);
-    var hbtn = makeSubtleButton("🧬 模拟请求头", "zcode-model-hub：为该供应商配置请求头模拟（写入 provider.headers）", function () {
-      onHeadersClick();
-    });
-    try {
-      target.insertAdjacentElement("afterend", pull);
-      matchNativeSize(pull, target);
-      pull.insertAdjacentElement("afterend", hbtn);
-      matchNativeSize(hbtn, target);
-    } catch (e) {}
-  }
-
-  // Copy the native button's rendered metrics so our buttons blend in on
-  // any ZCode version instead of hardcoding sizes.
-  function matchNativeSize(btn, ref) {
-    try {
-      var cs = getComputedStyle(ref);
-      btn.style.height = ref.offsetHeight + "px";
-      btn.style.paddingTop = cs.paddingTop;
-      btn.style.paddingRight = cs.paddingRight;
-      btn.style.paddingBottom = cs.paddingBottom;
-      btn.style.paddingLeft = cs.paddingLeft;
-      btn.style.fontSize = cs.fontSize;
-      btn.style.fontWeight = cs.fontWeight;
-      btn.style.borderRadius = cs.borderRadius;
-      btn.style.marginLeft = "8px";
-      btn.style.lineHeight = cs.lineHeight;
-    } catch (e) {}
-  }
+  // — removed: injecting next to an arbitrary "添加" button produced stray
+  //   buttons at the bottom of the section; if the label is missing we do
+  //   nothing and the CLI/skill layer remains the fallback.
 
   function checkAndInject() {
     if (!api()) return;
-    if (injectToolbarAtModelList()) return;
-    var hits = findAddModelButtons();
-    for (var i = 0; i < hits.length; i++) ensureButtonNextTo(hits[i]);
+    injectToolbarAtModelList();
   }
 
   // ---- credentials from the visible form (with config fallback) ----
