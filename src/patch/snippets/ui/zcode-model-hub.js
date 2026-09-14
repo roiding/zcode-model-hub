@@ -84,8 +84,9 @@
   }
 
   // Preferred placement (modelhub-style):
-  // Find the "模型列表" title element. Turn its line into a clean flex row
-  // with the title on the left and the action buttons right-aligned at the far right.
+  // Wrap the "模型列表" title in a fresh, isolated flex row so the title
+  // stays on the left and the two action buttons sit cleanly on the far right.
+  // We NEVER mutate the parent's layout styles, preventing layout breakage.
   function injectToolbarAtModelList() {
     var leaves = document.querySelectorAll("h1,h2,h3,h4,h5,h6,span,label,p,div");
     var titleEl = null;
@@ -103,32 +104,40 @@
     }
     if (!titleEl) return false;
 
-    // Find the immediate row/block containing this title
-    var row = titleEl.parentElement;
-    if (!row) return false;
+    // If already wrapped/injected, do not repeat
+    if (titleEl.parentElement && titleEl.parentElement.id === "zcode-model-hub-title-wrapper") {
+      return true;
+    }
+    if (document.getElementById("zcode-model-hub-title-wrapper")) {
+      return true;
+    }
 
-    // Avoid duplicate injection
-    if (row.querySelector("#" + BTN_ID) || row.getAttribute("data-model-hub-row")) return true;
+    var parent = titleEl.parentNode;
+    if (!parent) return false;
 
-    // Make the title container flex between so title is on left, buttons on far right
-    row.setAttribute("data-model-hub-row", "1");
-    row.style.display = "flex";
-    row.style.justifyContent = "space-between";
-    row.style.alignItems = "center";
-    row.style.width = "100%";
-    row.style.marginBottom = "8px";
+    // Create a zero-side-effect wrapper that takes the exact place of titleEl
+    var wrapper = document.createElement("div");
+    wrapper.id = "zcode-model-hub-title-wrapper";
+    wrapper.style.cssText =
+      "display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 8px;";
 
-    var wrap = document.createElement("div");
-    wrap.style.cssText = "display:inline-flex;gap:8px;align-items:center;margin-left:auto";
-    wrap.appendChild(
-      makeSubtleButton("⚡️ 拉取模型", "zcode-model-hub：根据当前 Base URL 和 API Key 自动拉取可用模型列表", onPullClick, BTN_ID)
-    );
-    wrap.appendChild(
-      makeSubtleButton("🧬 模拟请求头", "zcode-model-hub：为该供应商配置 Claude Code / Codex CLI 请求头模拟（写入 provider.headers）", function () {
+    var toolbar = document.createElement("div");
+    toolbar.id = "zcode-model-hub-toolbar";
+    toolbar.style.cssText = "display: inline-flex; align-items: center; gap: 8px; margin-left: auto;";
+
+    toolbar.appendChild(
+      makeSubtleButton("请求头模拟", "zcode-model-hub：为该供应商配置 Claude Code / Codex CLI 请求头模拟（写入 provider.headers）", function () {
         onHeadersClick();
       })
     );
-    row.appendChild(wrap);
+    toolbar.appendChild(
+      makeSubtleButton("拉取模型", "zcode-model-hub：根据当前 Base URL 和 API Key 自动拉取可用模型列表", onPullClick, BTN_ID)
+    );
+
+    parent.insertBefore(wrapper, titleEl);
+    wrapper.appendChild(titleEl);
+    wrapper.appendChild(toolbar);
+
     return true;
   }
 
